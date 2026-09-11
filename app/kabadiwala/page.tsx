@@ -8,43 +8,28 @@ import { useCallback, useEffect, useMemo, useState } from "react";
    TWO SEPARATE FUNCTIONS:
 
    1. CUSTOMER PICKUP REQUESTS
-      Customer
-          ↓
-      scrapsaathi_pickup_requests
-          ↓
-      Kabadiwala accepts/rejects/completes
+      Customer → PostgreSQL (via /api/pickups)
+      → Kabadiwala accepts/rejects/completes
 
    2. KABADIWALA BULK SCRAP SELLING
-      Kabadiwala
-          ↓
-      Lists bulk scrap
-          ↓
-      scrapsaathi_kabadiwala_listings
-          ↓
-      Recycler Dashboard
+      Kabadiwala → Lists bulk scrap
+      → PostgreSQL (via /api/listings) → Recycler Dashboard
 
    IMPORTANT:
    The Kabadiwala listing system is COMPLETELY SEPARATE
    from customer pickup requests.
 ============================================================= */
 
-
 /* =============================================================
    STORAGE KEYS
 ============================================================= */
 
-const PICKUP_REQUESTS_KEY =
-  "scrapsaathi_pickup_requests";
+const PICKUP_REQUESTS_KEY = "scrapsaathi_pickup_requests";
 
-const KABADIWALA_LISTINGS_KEY =
-  "scrapsaathi_kabadiwala_listings";
-
-const KABADIWALA_NAME =
-  "Kabadiwala";
-
+const KABADIWALA_NAME = "Kabadiwala";
 
 /* =============================================================
-   PICKUP TYPES
+   TYPES
 ============================================================= */
 
 type PickupStatus =
@@ -54,12 +39,11 @@ type PickupStatus =
   | "Completed"
   | "Rejected";
 
-type RequestType =
-  | "Sell Scrap"
-  | "Pick & Dump";
+type RequestType = "Sell Scrap" | "Pick & Dump";
 
 type PickupRequest = {
   id: string;
+  displayId?: string;
   customerName: string;
   customerInitial: string;
   requestType: RequestType;
@@ -74,88 +58,68 @@ type PickupRequest = {
   createdAt: string;
 };
 
-
-/* =============================================================
-   KABADIWALA LISTING TYPES
-============================================================= */
-
-type ListingStatus =
-  | "Available"
-  | "Sold"
-  | "Reserved";
+type ListingStatus = "Available" | "Sold" | "Reserved";
 
 type ScrapListing = {
   id: string;
-
-  /* Kabadiwala information */
   kabadiwalaName: string;
   kabadiwalaInitial: string;
-
-  /* Scrap information */
   material: string;
   quantity: string;
   price: string;
   description: string;
-
-  /* Location */
   location: string;
-
-  /* Optional image */
   imageName: string;
-
-  /* Listing information */
   status: ListingStatus;
   createdAt: string;
 };
 
+type ScrapOrder = {
+  id: string;
+  orderId: string;
+  listingId: string;
+  material: string;
+  quantity: string;
+  price: string;
+  totalAmount: string;
+  kabadiwalaName: string;
+  kabadiwalaId: string | null;
+  recyclerName: string;
+  recyclerId: string | null;
+  paymentStatus: "Pending" | "Success" | "Failed";
+  orderStatus: "Placed" | "Confirmed" | "Completed" | "Cancelled";
+  createdAt: string;
+  updatedAt: string;
+};
 
-/* =============================================================
-   TABS
-============================================================= */
-
-type TabType =
-  | "all"
-  | "new"
-  | "accepted"
-  | "completed";
-
+type TabType = "all" | "new" | "accepted" | "completed";
 
 /* =============================================================
    LOGOUT
 ============================================================= */
 
 const handleLogout = () => {
-  localStorage.removeItem(
-    "scrapsaathi_user"
-  );
-
+  localStorage.removeItem("scrapsaathi_user");
   window.location.href = "/";
 };
 
-
 /* =============================================================
-   PICKUP REQUEST HELPERS
+   PROTOTYPE-ONLY LOCALSTORAGE HELPERS
 ============================================================= */
 
 function readRequests(): PickupRequest[] {
-  if (
-    typeof window === "undefined"
-  ) {
+  if (typeof window === "undefined") {
     return [];
   }
 
   try {
-    const stored =
-      localStorage.getItem(
-        PICKUP_REQUESTS_KEY
-      );
+    const stored = localStorage.getItem(PICKUP_REQUESTS_KEY);
 
     if (!stored) {
       return [];
     }
 
-    const parsed =
-      JSON.parse(stored);
+    const parsed = JSON.parse(stored);
 
     if (!Array.isArray(parsed)) {
       return [];
@@ -163,1476 +127,920 @@ function readRequests(): PickupRequest[] {
 
     return parsed;
   } catch (error) {
-    console.error(
-      "Unable to read pickup requests:",
-      error
-    );
-
+    console.error("Unable to read pickup requests:", error);
     return [];
   }
 }
 
-
-/* =============================================================
-   SAVE PICKUP REQUESTS
-============================================================= */
-
-function saveRequests(
-  requests: PickupRequest[]
-) {
-  if (
-    typeof window === "undefined"
-  ) {
+function saveRequests(requests: PickupRequest[]) {
+  if (typeof window === "undefined") {
     return;
   }
 
-  localStorage.setItem(
-    PICKUP_REQUESTS_KEY,
-    JSON.stringify(requests)
-  );
-
-  try {
-    const channel =
-      new BroadcastChannel(
-        "scrapsaathi_pickup_channel"
-      );
-
-    channel.postMessage({
-      type: "pickup_requests_updated",
-      timestamp: Date.now(),
-    });
-
-    channel.close();
-  } catch {
-    // BroadcastChannel may not be available.
-  }
-
-  window.dispatchEvent(
-    new CustomEvent(
-      "scrapsaathi-pickups-updated"
-    )
-  );
+  localStorage.setItem(PICKUP_REQUESTS_KEY, JSON.stringify(requests));
 }
-
 
 /* =============================================================
-   PICKUP REQUEST TIME
+   DEMO DATE
 ============================================================= */
 
-function getRequestTime(
-  request: PickupRequest
-) {
-  const time =
-    new Date(
-      request.createdAt
-    ).getTime();
+function formatDateForDemo() {
+  const date = new Date();
 
-  return Number.isNaN(time)
-    ? 0
-    : time;
+  return date.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
 }
-
-
-/* =============================================================
-   KABADIWALA LISTING HELPERS
-============================================================= */
-
-function readListings(): ScrapListing[] {
-  if (
-    typeof window === "undefined"
-  ) {
-    return [];
-  }
-
-  try {
-    const stored =
-      localStorage.getItem(
-        KABADIWALA_LISTINGS_KEY
-      );
-
-    if (!stored) {
-      return [];
-    }
-
-    const parsed =
-      JSON.parse(stored);
-
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-
-    return parsed;
-  } catch (error) {
-    console.error(
-      "Unable to read Kabadiwala listings:",
-      error
-    );
-
-    return [];
-  }
-}
-
-
-/* =============================================================
-   SAVE KABADIWALA LISTINGS
-============================================================= */
-
-function saveListings(
-  listings: ScrapListing[]
-) {
-  if (
-    typeof window === "undefined"
-  ) {
-    return;
-  }
-
-  localStorage.setItem(
-    KABADIWALA_LISTINGS_KEY,
-    JSON.stringify(listings)
-  );
-
-  try {
-    const channel =
-      new BroadcastChannel(
-        "scrapsaathi_listings_channel"
-      );
-
-    channel.postMessage({
-      type: "kabadiwala_listings_updated",
-      timestamp: Date.now(),
-    });
-
-    channel.close();
-  } catch {
-    // BroadcastChannel may not be available.
-  }
-
-  window.dispatchEvent(
-    new CustomEvent(
-      "scrapsaathi-listings-updated"
-    )
-  );
-}
-
 
 /* =============================================================
    MAIN PAGE
 ============================================================= */
 
 export default function KabadiwalaPage() {
-
   /* =========================================================
      PICKUP STATES
   ========================================================= */
 
-  const [
-    requests,
-    setRequests,
-  ] = useState<PickupRequest[]>([]);
-
-  const [
-    activeTab,
-    setActiveTab,
-  ] = useState<TabType>("new");
-
-  const [
-    search,
-    setSearch,
-  ] = useState("");
-
-  const [
-    materialFilter,
-    setMaterialFilter,
-  ] = useState("All Materials");
-
-  const [
-    message,
-    setMessage,
-  ] = useState("");
-
-  const [
-    selectedRequest,
-    setSelectedRequest,
-  ] = useState<PickupRequest | null>(
+  const [requests, setRequests] = useState<PickupRequest[]>([]);
+  const [activeTab, setActiveTab] = useState<TabType>("new");
+  const [search, setSearch] = useState("");
+  const [materialFilter, setMaterialFilter] = useState("All Materials");
+  const [message, setMessage] = useState("");
+  const [selectedRequest, setSelectedRequest] = useState<PickupRequest | null>(
     null
   );
-
-  const [
-    isLoaded,
-    setIsLoaded,
-  ] = useState(false);
-
+  const [isLoaded, setIsLoaded] = useState(false);
 
   /* =========================================================
      SELL SCRAP STATES
   ========================================================= */
 
-  const [
-    listings,
-    setListings,
-  ] = useState<ScrapListing[]>([]);
-
-  const [
-    showSellPanel,
-    setShowSellPanel,
-  ] = useState(false);
-
-  const [
-    selectedListing,
-    setSelectedListing,
-  ] = useState<ScrapListing | null>(
+  const [listings, setListings] = useState<ScrapListing[]>([]);
+  const [scrapOrders, setScrapOrders] = useState<ScrapOrder[]>([]);
+  const [processingOrderId, setProcessingOrderId] = useState<string | null>(
     null
   );
-
-  const [
-    sellMaterial,
-    setSellMaterial,
-  ] = useState("Paper");
-
-  const [
-    sellQuantity,
-    setSellQuantity,
-  ] = useState("");
-
-  const [
-    sellPrice,
-    setSellPrice,
-  ] = useState("");
-
-  const [
-    sellLocation,
-    setSellLocation,
-  ] = useState("Kolkata");
-
-  const [
-    sellDescription,
-    setSellDescription,
-  ] = useState("");
-
-  const [
-    sellImageName,
-    setSellImageName,
-  ] = useState("");
-
+  const [showSellPanel, setShowSellPanel] = useState(false);
+  const [selectedListing, setSelectedListing] = useState<ScrapListing | null>(
+    null
+  );
+  const [sellMaterial, setSellMaterial] = useState("Paper");
+  const [sellQuantity, setSellQuantity] = useState("");
+  const [sellPrice, setSellPrice] = useState("");
+  const [sellLocation, setSellLocation] = useState("Kolkata");
+  const [sellDescription, setSellDescription] = useState("");
+  const [sellImageName, setSellImageName] = useState("");
 
   /* =========================================================
      TOAST
   ========================================================= */
 
-  const showMessage =
-    useCallback(
-      (text: string) => {
-        setMessage(text);
+  const showMessage = useCallback((text: string) => {
+    setMessage(text);
 
-        window.setTimeout(() => {
-          setMessage("");
-        }, 3500);
-      },
-      []
-    );
-
+    window.setTimeout(() => {
+      setMessage("");
+    }, 3500);
+  }, []);
 
   /* =========================================================
-     LOAD PICKUP REQUESTS
+     LOAD PICKUP REQUESTS - POSTGRESQL API
   ========================================================= */
 
-  const refreshRequests =
-    useCallback(
-      (showToast = false) => {
-
-        const latest =
-          readRequests();
-
-        latest.sort(
-          (a, b) =>
-            getRequestTime(b) -
-            getRequestTime(a)
-        );
-
-        setRequests(latest);
-        setIsLoaded(true);
-
-        if (showToast) {
-          showMessage(
-            "Requests refreshed."
-          );
-        }
-      },
-      [showMessage]
-    );
-
-
-  /* =========================================================
-     LOAD LISTINGS
-  ========================================================= */
-
-  const refreshListings =
-    useCallback(
-      () => {
-        const latest =
-          readListings();
-
-        latest.sort(
-          (a, b) =>
-            new Date(
-              b.createdAt
-            ).getTime() -
-            new Date(
-              a.createdAt
-            ).getTime()
-        );
-
-        setListings(latest);
-      },
-      []
-    );
-
-
-  /* =========================================================
-     INITIAL LOAD
-  ========================================================= */
-
-  useEffect(() => {
-    refreshRequests(false);
-    refreshListings();
-  }, [
-    refreshRequests,
-    refreshListings,
-  ]);
-
-
-  /* =========================================================
-     REAL-TIME PICKUP REQUEST SYNC
-  ========================================================= */
-
-  useEffect(() => {
-
-    const handleStorage = (
-      event: StorageEvent
-    ) => {
-
-      if (
-        event.key ===
-        PICKUP_REQUESTS_KEY
-      ) {
-        refreshRequests(false);
+  const refreshRequests = useCallback(
+    async (showLoading = true) => {
+      if (showLoading) {
+        setIsLoaded(false);
       }
 
-      if (
-        event.key ===
-        KABADIWALA_LISTINGS_KEY
-      ) {
-        refreshListings();
+      try {
+        const response = await fetch("/api/pickups", {
+          method: "GET",
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          throw new Error("Failed to load pickup requests");
+        }
+
+        const data = await response.json();
+
+        setRequests(Array.isArray(data) ? data : []);
+      } catch (error) {
+        console.error("refreshRequests error:", error);
+
+        showMessage("Unable to load pickup requests from the database.");
+      } finally {
+        if (showLoading) {
+          setIsLoaded(true);
+        }
+      }
+    },
+    [showMessage]
+  );
+
+  /* =========================================================
+     LOAD LISTINGS - POSTGRESQL API
+  ========================================================= */
+
+  const refreshListings = useCallback(async () => {
+    try {
+      const response = await fetch("/api/listings", {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to load scrap listings");
+      }
+
+      const data = await response.json();
+
+      setListings(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error("refreshListings error:", error);
+
+      showMessage("Unable to load scrap listings from the database.");
+    }
+  }, [showMessage]);
+
+  /* =========================================================
+     LOAD RECYCLER PURCHASE ORDERS - POSTGRESQL API
+  ========================================================= */
+
+  const refreshScrapOrders = useCallback(async () => {
+    try {
+      const response = await fetch("/api/orders", {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error || "Unable to load recycler purchase orders."
+        );
+      }
+
+      setScrapOrders(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error("refreshScrapOrders error:", error);
+    }
+  }, []);
+
+  /* =========================================================
+     INITIAL LOAD (runs once on mount)
+  ========================================================= */
+
+  useEffect(() => {
+    let isActive = true;
+
+    const loadInitialData = async () => {
+      await Promise.all([
+        refreshRequests(false),
+        refreshListings(),
+        refreshScrapOrders(),
+      ]);
+
+      if (isActive) {
+        setIsLoaded(true);
       }
     };
 
-
-    const handlePickupUpdate =
-      () => {
-        refreshRequests(false);
-      };
-
-
-    const handleListingUpdate =
-      () => {
-        refreshListings();
-      };
-
-
-    let pickupChannel:
-      | BroadcastChannel
-      | null = null;
-
-    let listingChannel:
-      | BroadcastChannel
-      | null = null;
-
-
-    try {
-
-      pickupChannel =
-        new BroadcastChannel(
-          "scrapsaathi_pickup_channel"
-        );
-
-      pickupChannel.onmessage =
-        () => {
-          refreshRequests(false);
-        };
-
-    } catch {
-      pickupChannel = null;
-    }
-
-
-    try {
-
-      listingChannel =
-        new BroadcastChannel(
-          "scrapsaathi_listings_channel"
-        );
-
-      listingChannel.onmessage =
-        () => {
-          refreshListings();
-        };
-
-    } catch {
-      listingChannel = null;
-    }
-
-
-    const interval =
-      window.setInterval(() => {
-
-        refreshRequests(false);
-        refreshListings();
-
-      }, 1000);
-
-
-    window.addEventListener(
-      "storage",
-      handleStorage
-    );
-
-    window.addEventListener(
-      "scrapsaathi-pickups-updated",
-      handlePickupUpdate
-    );
-
-    window.addEventListener(
-      "scrapsaathi-listings-updated",
-      handleListingUpdate
-    );
-
+    loadInitialData();
 
     return () => {
-
-      window.removeEventListener(
-        "storage",
-        handleStorage
-      );
-
-      window.removeEventListener(
-        "scrapsaathi-pickups-updated",
-        handlePickupUpdate
-      );
-
-      window.removeEventListener(
-        "scrapsaathi-listings-updated",
-        handleListingUpdate
-      );
-
-      window.clearInterval(
-        interval
-      );
-
-      if (pickupChannel) {
-        pickupChannel.close();
-      }
-
-      if (listingChannel) {
-        listingChannel.close();
-      }
+      isActive = false;
     };
-
-  }, [
-    refreshRequests,
-    refreshListings,
-  ]);
-
+  }, [refreshRequests, refreshListings, refreshScrapOrders]);
 
   /* =========================================================
      PICKUP COUNTS
   ========================================================= */
 
-  const totalRequests =
-    requests.length;
+  const totalRequests = requests.length;
 
-  const newRequests =
-    requests.filter(
-      (request) =>
-        request.status ===
-        "Pending"
-    ).length;
+  const newRequests = requests.filter(
+    (request) => request.status === "Pending"
+  ).length;
 
-  const acceptedRequests =
-    requests.filter(
-      (request) =>
-        request.status ===
-          "Accepted" ||
-        request.status ===
-          "Confirmed"
-    ).length;
+  const acceptedRequests = requests.filter(
+    (request) =>
+      request.status === "Accepted" || request.status === "Confirmed"
+  ).length;
 
-  const completedRequests =
-    requests.filter(
-      (request) =>
-        request.status ===
-        "Completed"
-    ).length;
-
+  const completedRequests = requests.filter(
+    (request) => request.status === "Completed"
+  ).length;
 
   /* =========================================================
      LISTING COUNTS
   ========================================================= */
 
-  const totalListings =
-    listings.length;
+  const totalListings = listings.length;
 
-  const availableListings =
-    listings.filter(
-      (listing) =>
-        listing.status ===
-        "Available"
-    ).length;
-
-  const soldListings =
-    listings.filter(
-      (listing) =>
-        listing.status ===
-        "Sold"
-    ).length;
-
+  const availableListings = listings.filter(
+    (listing) => listing.status === "Available"
+  ).length;
 
   /* =========================================================
      FILTER PICKUP REQUESTS
   ========================================================= */
 
-  const filteredRequests =
-    useMemo(() => {
+  const filteredRequests = useMemo(() => {
+    let result = [...requests];
 
-      let result = [
-        ...requests,
-      ];
+    if (activeTab === "new") {
+      result = result.filter((request) => request.status === "Pending");
+    }
 
+    if (activeTab === "accepted") {
+      result = result.filter(
+        (request) =>
+          request.status === "Accepted" || request.status === "Confirmed"
+      );
+    }
 
-      if (
-        activeTab === "new"
-      ) {
+    if (activeTab === "completed") {
+      result = result.filter((request) => request.status === "Completed");
+    }
 
-        result =
-          result.filter(
-            (request) =>
-              request.status ===
-              "Pending"
-          );
+    if (materialFilter !== "All Materials") {
+      result = result.filter((request) => request.material === materialFilter);
+    }
 
-      }
+    const searchValue = search.trim().toLowerCase();
 
+    if (searchValue) {
+      result = result.filter(
+        (request) =>
+          request.customerName?.toLowerCase().includes(searchValue) ||
+          request.material?.toLowerCase().includes(searchValue) ||
+          request.location?.toLowerCase().includes(searchValue) ||
+          request.quantity?.toLowerCase().includes(searchValue) ||
+          request.id?.toLowerCase().includes(searchValue)
+      );
+    }
 
-      if (
-        activeTab === "accepted"
-      ) {
-
-        result =
-          result.filter(
-            (request) =>
-              request.status ===
-                "Accepted" ||
-              request.status ===
-                "Confirmed"
-          );
-
-      }
-
-
-      if (
-        activeTab === "completed"
-      ) {
-
-        result =
-          result.filter(
-            (request) =>
-              request.status ===
-              "Completed"
-          );
-
-      }
-
-
-      if (
-        materialFilter !==
-        "All Materials"
-      ) {
-
-        result =
-          result.filter(
-            (request) =>
-              request.material ===
-              materialFilter
-          );
-
-      }
-
-
-      const searchValue =
-        search
-          .trim()
-          .toLowerCase();
-
-
-      if (searchValue) {
-
-        result =
-          result.filter(
-            (request) =>
-              request.customerName
-                ?.toLowerCase()
-                .includes(
-                  searchValue
-                ) ||
-
-              request.material
-                ?.toLowerCase()
-                .includes(
-                  searchValue
-                ) ||
-
-              request.location
-                ?.toLowerCase()
-                .includes(
-                  searchValue
-                ) ||
-
-              request.quantity
-                ?.toLowerCase()
-                .includes(
-                  searchValue
-                ) ||
-
-              request.id
-                ?.toLowerCase()
-                .includes(
-                  searchValue
-                )
-          );
-
-      }
-
-
-      return result;
-
-    }, [
-      requests,
-      activeTab,
-      materialFilter,
-      search,
-    ]);
-
+    return result;
+  }, [requests, activeTab, materialFilter, search]);
 
   /* =========================================================
-     ACCEPT PICKUP
+     ACCEPT PICKUP - POSTGRESQL API
   ========================================================= */
 
-  const acceptRequest = (
-    requestId: string
-  ) => {
-
-    const current =
-      readRequests();
-
-    const request =
-      current.find(
-        (item) =>
-          item.id ===
-          requestId
-      );
-
-
-    if (!request) {
-
-      showMessage(
-        "Request not found. Refreshing..."
-      );
-
-      refreshRequests(false);
-
-      return;
-    }
-
-
-    if (
-      request.status !==
-      "Pending"
-    ) {
-
-      showMessage(
-        "This request has already been processed."
-      );
-
-      refreshRequests(false);
-
-      return;
-    }
-
-
-    const updated =
-      current.map(
-        (item) => {
-
-          if (
-            item.id !==
-            requestId
-          ) {
-            return item;
-          }
-
-          return {
-            ...item,
-            status:
-              "Accepted" as PickupStatus,
-            assignedKabadiwala:
-              KABADIWALA_NAME,
-          };
-
+  const acceptRequest = async (requestId: string) => {
+    try {
+      const response = await fetch(
+        `/api/pickups/${encodeURIComponent(requestId)}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            status: "Accepted",
+            assignedKabadiwala: KABADIWALA_NAME,
+          }),
         }
       );
 
+      const data = await response.json();
 
-    saveRequests(updated);
+      if (!response.ok) {
+        throw new Error(data?.error || "Unable to accept pickup request.");
+      }
 
-    refreshRequests(false);
-
-    setSelectedRequest(null);
-
-    showMessage(
-      `✓ ${request.id} accepted successfully.`
-    );
-
-    setActiveTab(
-      "accepted"
-    );
-  };
-
-
-  /* =========================================================
-     REJECT PICKUP
-  ========================================================= */
-
-  const rejectRequest = (
-    requestId: string
-  ) => {
-
-    const current =
-      readRequests();
-
-    const request =
-      current.find(
-        (item) =>
-          item.id ===
-          requestId
+      setRequests((current) =>
+        current.map((item) => (item.id === requestId ? data : item))
       );
 
+      setSelectedRequest(null);
 
-    if (!request) {
+      showMessage(`✓ ${data.displayId || requestId} accepted successfully.`);
+
+      setActiveTab("accepted");
+    } catch (error) {
+      console.error("acceptRequest error:", error);
 
       showMessage(
-        "Request not found."
+        error instanceof Error
+          ? error.message
+          : "Unable to accept pickup request."
       );
 
       refreshRequests(false);
-
-      return;
     }
+  };
 
+  /* =========================================================
+     REJECT PICKUP - POSTGRESQL API
+  ========================================================= */
 
-    const updated =
-      current.map(
-        (item) => {
-
-          if (
-            item.id !==
-            requestId
-          ) {
-            return item;
-          }
-
-          return {
-            ...item,
-            status:
-              "Rejected" as PickupStatus,
-            assignedKabadiwala:
-              KABADIWALA_NAME,
-          };
-
+  const rejectRequest = async (requestId: string) => {
+    try {
+      const response = await fetch(
+        `/api/pickups/${encodeURIComponent(requestId)}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            status: "Rejected",
+            assignedKabadiwala: KABADIWALA_NAME,
+          }),
         }
       );
 
+      const data = await response.json();
 
-    saveRequests(updated);
+      if (!response.ok) {
+        throw new Error(data?.error || "Unable to reject pickup request.");
+      }
 
-    refreshRequests(false);
-
-    setSelectedRequest(null);
-
-    showMessage(
-      `Request ${request.id} rejected.`
-    );
-  };
-
-
-  /* =========================================================
-     COMPLETE PICKUP
-  ========================================================= */
-
-  const completeRequest = (
-    requestId: string
-  ) => {
-
-    const current =
-      readRequests();
-
-    const request =
-      current.find(
-        (item) =>
-          item.id ===
-          requestId
+      setRequests((current) =>
+        current.map((item) => (item.id === requestId ? data : item))
       );
 
+      setSelectedRequest(null);
 
-    if (!request) {
+      showMessage(`Request ${data.displayId || requestId} rejected.`);
+    } catch (error) {
+      console.error("rejectRequest error:", error);
 
       showMessage(
-        "Request not found."
+        error instanceof Error
+          ? error.message
+          : "Unable to reject pickup request."
       );
 
       refreshRequests(false);
-
-      return;
     }
+  };
 
+  /* =========================================================
+     COMPLETE PICKUP - POSTGRESQL API
+  ========================================================= */
 
-    if (
-      request.status !==
-        "Accepted" &&
-      request.status !==
-        "Confirmed"
-    ) {
+  const completeRequest = async (requestId: string) => {
+    try {
+      const request = requests.find((item) => item.id === requestId);
+
+      if (!request) {
+        showMessage("Request not found. Refreshing...");
+
+        refreshRequests(false);
+        return;
+      }
+
+      if (request.status !== "Accepted" && request.status !== "Confirmed") {
+        showMessage("Only accepted pickups can be completed.");
+        return;
+      }
+
+      const response = await fetch(
+        `/api/pickups/${encodeURIComponent(requestId)}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            status: "Completed",
+            assignedKabadiwala: request.assignedKabadiwala || KABADIWALA_NAME,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Unable to complete pickup request.");
+      }
+
+      setRequests((current) =>
+        current.map((item) => (item.id === requestId ? data : item))
+      );
+
+      setSelectedRequest(null);
+
+      showMessage(`✓ Pickup ${data.displayId || requestId} completed.`);
+
+      setActiveTab("completed");
+    } catch (error) {
+      console.error("completeRequest error:", error);
 
       showMessage(
-        "Only accepted pickups can be completed."
+        error instanceof Error
+          ? error.message
+          : "Unable to complete pickup request."
       );
-
-      return;
-    }
-
-
-    const updated =
-      current.map(
-        (item) => {
-
-          if (
-            item.id !==
-            requestId
-          ) {
-            return item;
-          }
-
-          return {
-            ...item,
-            status:
-              "Completed" as PickupStatus,
-            assignedKabadiwala:
-              item.assignedKabadiwala ||
-              KABADIWALA_NAME,
-          };
-
-        }
-      );
-
-
-    saveRequests(updated);
-
-    refreshRequests(false);
-
-    setSelectedRequest(null);
-
-    showMessage(
-      `✓ Pickup ${request.id} completed.`
-    );
-
-    setActiveTab(
-      "completed"
-    );
-  };
-
-
-  /* =========================================================
-     CONFIRM PICKUP
-  ========================================================= */
-
-  const confirmRequest = (
-    requestId: string
-  ) => {
-
-    const current =
-      readRequests();
-
-    const request =
-      current.find(
-        (item) =>
-          item.id ===
-          requestId
-      );
-
-
-    if (!request) {
-      return;
-    }
-
-
-    const updated =
-      current.map(
-        (item) => {
-
-          if (
-            item.id !==
-            requestId
-          ) {
-            return item;
-          }
-
-          return {
-            ...item,
-            status:
-              "Confirmed" as PickupStatus,
-            assignedKabadiwala:
-              item.assignedKabadiwala ||
-              KABADIWALA_NAME,
-          };
-
-        }
-      );
-
-
-    saveRequests(updated);
-
-    refreshRequests(false);
-
-    showMessage(
-      `Pickup ${request.id} confirmed.`
-    );
-  };
-
-
-  /* =========================================================
-     CREATE DEMO PICKUP
-  ========================================================= */
-
-  const createDemoRequest =
-    () => {
-
-      const current =
-        readRequests();
-
-      const demoRequest:
-        PickupRequest = {
-
-        id:
-          `#PK${Date.now()
-            .toString()
-            .slice(-6)}`,
-
-        customerName:
-          "Demo Customer",
-
-        customerInitial:
-          "D",
-
-        requestType:
-          "Sell Scrap",
-
-        material:
-          "Paper",
-
-        quantity:
-          "10 kg",
-
-        location:
-          "Salt Lake, Kolkata",
-
-        date:
-          formatDateForDemo(),
-
-        time:
-          "6:00 PM",
-
-        imageName:
-          "",
-
-        status:
-          "Pending",
-
-        assignedKabadiwala:
-          null,
-
-        createdAt:
-          new Date()
-            .toISOString(),
-      };
-
-
-      saveRequests([
-        demoRequest,
-        ...current,
-      ]);
 
       refreshRequests(false);
+    }
+  };
 
-      setActiveTab("new");
+  /* =========================================================
+     CONFIRM PICKUP - POSTGRESQL API
+  ========================================================= */
+
+  const confirmRequest = async (requestId: string) => {
+    try {
+      const response = await fetch(
+        `/api/pickups/${encodeURIComponent(requestId)}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            status: "Confirmed",
+            assignedKabadiwala: KABADIWALA_NAME,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Unable to confirm pickup request.");
+      }
+
+      setRequests((current) =>
+        current.map((item) => (item.id === requestId ? data : item))
+      );
+
+      showMessage(`Pickup ${data.displayId || requestId} confirmed.`);
+    } catch (error) {
+      console.error("confirmRequest error:", error);
 
       showMessage(
-        "Demo pickup request created."
+        error instanceof Error
+          ? error.message
+          : "Unable to confirm pickup request."
       );
+
+      refreshRequests(false);
+    }
+  };
+
+  /* =========================================================
+     ACCEPT RECYCLER PURCHASE
+  ========================================================= */
+
+  const acceptScrapOrder = async (orderId: string) => {
+    if (processingOrderId) return;
+
+    const order = scrapOrders.find((item) => item.id === orderId);
+
+    if (!order) {
+      showMessage("Purchase request not found. Refreshing...");
+      await refreshScrapOrders();
+      return;
+    }
+
+    if (order.orderStatus !== "Placed") {
+      showMessage("This purchase request has already been processed.");
+      await refreshScrapOrders();
+      return;
+    }
+
+    setProcessingOrderId(orderId);
+
+    try {
+      const response = await fetch(
+        `/api/orders/${encodeURIComponent(order.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ orderStatus: "Confirmed" }),
+        }
+      );
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error || data?.message || "Unable to accept purchase request."
+        );
+      }
+
+      await refreshScrapOrders();
+      await refreshListings();
+      showMessage(
+        `✓ Order ${order.orderId} accepted. Scrap sold to ${order.recyclerName}.`
+      );
+    } catch (error) {
+      console.error("acceptScrapOrder error:", error);
+      showMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to accept purchase request."
+      );
+    } finally {
+      setProcessingOrderId(null);
+    }
+  };
+
+  /* =========================================================
+     REJECT RECYCLER PURCHASE
+  ========================================================= */
+
+  const rejectScrapOrder = async (orderId: string) => {
+    if (processingOrderId) return;
+
+    const order = scrapOrders.find((item) => item.id === orderId);
+
+    if (!order) {
+      showMessage("Purchase request not found. Refreshing...");
+      await refreshScrapOrders();
+      return;
+    }
+
+    if (order.orderStatus !== "Placed") {
+      showMessage("This purchase request has already been processed.");
+      await refreshScrapOrders();
+      return;
+    }
+
+    setProcessingOrderId(orderId);
+
+    try {
+      const response = await fetch(
+        `/api/orders/${encodeURIComponent(order.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ orderStatus: "Cancelled" }),
+        }
+      );
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error || data?.message || "Unable to reject purchase request."
+        );
+      }
+
+      await refreshScrapOrders();
+      await refreshListings();
+      showMessage(
+        `Order ${order.orderId} rejected. The scrap is available again.`
+      );
+    } catch (error) {
+      console.error("rejectScrapOrder error:", error);
+      showMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to reject purchase request."
+      );
+    } finally {
+      setProcessingOrderId(null);
+    }
+  };
+
+  /* =========================================================
+     CREATE DEMO PICKUP (prototype-only, localStorage)
+  ========================================================= */
+
+  const createDemoRequest = () => {
+    const current = readRequests();
+
+    const demoRequest: PickupRequest = {
+      id: `#PK${Date.now().toString().slice(-6)}`,
+      customerName: "Demo Customer",
+      customerInitial: "D",
+      requestType: "Sell Scrap",
+      material: "Paper",
+      quantity: "10 kg",
+      location: "Salt Lake, Kolkata",
+      date: formatDateForDemo(),
+      time: "6:00 PM",
+      imageName: "",
+      status: "Pending",
+      assignedKabadiwala: null,
+      createdAt: new Date().toISOString(),
     };
 
+    saveRequests([demoRequest, ...current]);
+
+    setActiveTab("new");
+
+    showMessage("Demo pickup request created.");
+  };
 
   /* =========================================================
-     CLEAR PICKUP REQUESTS
+     CLEAR PICKUP REQUESTS (prototype-only, localStorage)
   ========================================================= */
 
-  const clearAllRequests =
-    () => {
-
-      const confirmed =
-        window.confirm(
-          "Delete all pickup requests from this browser?"
-        );
-
-
-      if (!confirmed) {
-        return;
-      }
-
-
-      saveRequests([]);
-
-      refreshRequests(false);
-
-      showMessage(
-        "All pickup requests cleared."
-      );
-    };
-
-
-  /* =========================================================
-     ADD BULK SCRAP LISTING
-  ========================================================= */
-
-  const addScrapListing =
-    () => {
-
-      if (
-        !sellQuantity.trim()
-      ) {
-
-        showMessage(
-          "Please enter the scrap quantity."
-        );
-
-        return;
-      }
-
-
-      if (
-        !sellPrice.trim()
-      ) {
-
-        showMessage(
-          "Please enter your expected price."
-        );
-
-        return;
-      }
-
-
-      if (
-        !sellLocation.trim()
-      ) {
-
-        showMessage(
-          "Please enter the location."
-        );
-
-        return;
-      }
-
-
-      const current =
-        readListings();
-
-
-      const newListing:
-        ScrapListing = {
-
-        id:
-          `#SL${Date.now()
-            .toString()
-            .slice(-6)}`,
-
-        kabadiwalaName:
-          KABADIWALA_NAME,
-
-        kabadiwalaInitial:
-          "K",
-
-        material:
-          sellMaterial,
-
-        quantity:
-          sellQuantity.trim(),
-
-        price:
-          sellPrice.trim(),
-
-        description:
-          sellDescription.trim(),
-
-        location:
-          sellLocation.trim(),
-
-        imageName:
-          sellImageName,
-
-        status:
-          "Available",
-
-        createdAt:
-          new Date()
-            .toISOString(),
-      };
-
-
-      saveListings([
-        newListing,
-        ...current,
-      ]);
-
-      refreshListings();
-
-
-      /* RESET FORM */
-
-      setSellMaterial(
-        "Paper"
-      );
-
-      setSellQuantity("");
-
-      setSellPrice("");
-
-      setSellLocation(
-        "Kolkata"
-      );
-
-      setSellDescription("");
-
-      setSellImageName("");
-
-      setShowSellPanel(false);
-
-
-      showMessage(
-        "✓ Your bulk scrap has been listed for recyclers."
-      );
-    };
-
-
-  /* =========================================================
-     REMOVE LISTING
-  ========================================================= */
-
-  const removeListing = (
-    listingId: string
-  ) => {
-
-    const confirmed =
-      window.confirm(
-        "Remove this scrap listing?"
-      );
-
+  const clearAllRequests = () => {
+    const confirmed = window.confirm(
+      "Delete all pickup requests from this browser?"
+    );
 
     if (!confirmed) {
       return;
     }
 
+    saveRequests([]);
 
-    const current =
-      readListings();
-
-
-    const updated =
-      current.filter(
-        (listing) =>
-          listing.id !==
-          listingId
-      );
-
-
-    saveListings(updated);
-
-    refreshListings();
-
-    setSelectedListing(null);
-
-    showMessage(
-      "Scrap listing removed."
-    );
+    showMessage("All pickup requests cleared.");
   };
 
-
   /* =========================================================
-     MARK LISTING SOLD
+     ADD BULK SCRAP LISTING - POSTGRESQL
   ========================================================= */
 
-  const markListingSold = (
-    listingId: string
-  ) => {
+  const addScrapListing = async () => {
+    if (!sellQuantity.trim()) {
+      showMessage("Please enter the scrap quantity.");
+      return;
+    }
 
-    const current =
-      readListings();
+    if (!sellPrice.trim()) {
+      showMessage("Please enter your expected price.");
+      return;
+    }
 
+    if (!sellLocation.trim()) {
+      showMessage("Please enter the location.");
+      return;
+    }
 
-    const updated =
-      current.map(
-        (listing) => {
+    try {
+      const response = await fetch("/api/listings", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          material: sellMaterial,
+          quantity: sellQuantity.trim(),
+          price: sellPrice.trim(),
+          location: sellLocation.trim(),
+          description: sellDescription.trim() || null,
+          imageName: sellImageName || null,
+          status: "Available",
+          kabadiwalaName: KABADIWALA_NAME,
+          kabadiwalaId: null,
+        }),
+      });
 
-          if (
-            listing.id !==
-            listingId
-          ) {
-            return listing;
-          }
+      const data = await response.json().catch(() => null);
 
-          return {
-            ...listing,
-            status:
-              "Sold" as ListingStatus,
-          };
+      if (!response.ok) {
+        throw new Error(
+          data?.error || data?.message || "Unable to create listing."
+        );
+      }
 
+      setSellMaterial("Paper");
+      setSellQuantity("");
+      setSellPrice("");
+      setSellLocation("Kolkata");
+      setSellDescription("");
+      setSellImageName("");
+      setShowSellPanel(false);
+
+      await refreshListings();
+
+      showMessage("✓ Your bulk scrap has been listed for recyclers.");
+    } catch (error) {
+      console.error("Unable to create scrap listing:", error);
+      showMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to create scrap listing."
+      );
+    }
+  };
+
+  /* =========================================================
+     REMOVE LISTING - POSTGRESQL
+  ========================================================= */
+
+  const removeListing = async (listingId: string) => {
+    const confirmed = window.confirm("Remove this scrap listing?");
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `/api/listings/${encodeURIComponent(listingId)}`,
+        {
+          method: "DELETE",
         }
       );
 
+      const data = await response.json().catch(() => null);
 
-    saveListings(updated);
+      if (!response.ok) {
+        throw new Error(
+          data?.error || data?.message || "Unable to remove listing."
+        );
+      }
 
-    refreshListings();
-
-    setSelectedListing(null);
-
-    showMessage(
-      "Listing marked as sold."
-    );
+      await refreshListings();
+      setSelectedListing(null);
+      showMessage("Scrap listing removed.");
+    } catch (error) {
+      console.error("Unable to remove listing:", error);
+      showMessage(
+        error instanceof Error ? error.message : "Unable to remove listing."
+      );
+    }
   };
 
+  /* =========================================================
+     MARK LISTING SOLD - POSTGRESQL
+  ========================================================= */
+
+  const markListingSold = async (listingId: string) => {
+    try {
+      const response = await fetch(
+        `/api/listings/${encodeURIComponent(listingId)}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            status: "Sold",
+          }),
+        }
+      );
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        console.error("MARK LISTING SOLD API ERROR:", {
+          status: response.status,
+          data,
+        });
+
+        throw new Error(
+          data?.error ||
+            data?.message ||
+            `Unable to update listing. HTTP ${response.status}`
+        );
+      }
+
+      await refreshListings();
+      setSelectedListing(null);
+      showMessage("Listing marked as sold.");
+    } catch (error) {
+      console.error("Unable to mark listing as sold:", error);
+      showMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to mark listing as sold."
+      );
+    }
+  };
 
   /* =========================================================
      LOADING
   ========================================================= */
 
   if (!isLoaded) {
-
     return (
-
       <main className="flex min-h-screen items-center justify-center bg-[#f7f9fc]">
-
         <div className="text-center">
-
-          <div className="text-4xl">
-            ♻️
-          </div>
+          <div className="text-4xl">♻️</div>
 
           <p className="mt-3 font-semibold text-slate-600">
             Loading Kabadiwala Dashboard...
           </p>
-
         </div>
-
       </main>
     );
   }
-
 
   /* =========================================================
      MAIN UI
   ========================================================= */
 
   return (
-
     <main className="min-h-screen bg-[#f7f9fc] text-slate-900">
-
-
       {/* ===================================================
           NAVBAR
       =================================================== */}
 
       <header className="sticky top-0 z-40 border-b border-slate-200 bg-white">
-
         <div className="mx-auto flex min-h-[72px] max-w-[1500px] items-center justify-between gap-4 px-5 py-3 md:px-8">
-
-
           {/* LOGO */}
 
           <div className="flex items-center gap-3">
-
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-amber-500 text-2xl text-white shadow-sm">
               ♻
             </div>
 
             <div>
-
               <h1 className="text-xl font-bold tracking-tight">
-
                 Scrap
-                <span className="text-amber-500">
-                  Saathi
-                </span>
-
+                <span className="text-amber-500">Saathi</span>
               </h1>
 
               <p className="text-[11px] text-slate-500">
                 Collection Partner
               </p>
-
             </div>
-
           </div>
-
 
           {/* RIGHT SIDE */}
 
           <div className="flex items-center gap-2 md:gap-3">
-
-
             {/* SELL SCRAP BUTTON */}
 
             <button
               type="button"
-              onClick={() =>
-                setShowSellPanel(true)
-              }
+              onClick={() => setShowSellPanel(true)}
               className="flex items-center gap-2 rounded-xl bg-amber-500 px-4 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-green-700"
             >
-              <span>
-                +
-              </span>
+              <span>+</span>
 
-              <span className="hidden sm:inline">
-                Sell Scrap
-              </span>
+              <span className="hidden sm:inline">Sell Scrap</span>
 
-              <span className="sm:hidden">
-                Sell
-              </span>
-
+              <span className="sm:hidden">Sell</span>
             </button>
-
 
             {/* NOTIFICATION */}
 
             <div className="relative">
-
               <button
                 type="button"
-                onClick={() =>
-                  setActiveTab("new")
-                }
+                onClick={() => setActiveTab("new")}
                 className="relative flex h-12 w-12 items-center justify-center rounded-xl border border-slate-200 bg-white text-xl hover:bg-slate-50"
                 title="New pickup requests"
               >
-
                 🔔
 
                 {newRequests > 0 && (
-
                   <span className="absolute -right-1 -top-1 flex h-6 min-w-6 items-center justify-center rounded-full bg-red-500 px-1 text-[11px] font-bold text-white">
-
-                    {newRequests > 99
-                      ? "99+"
-                      : newRequests}
-
+                    {newRequests > 99 ? "99+" : newRequests}
                   </span>
-
                 )}
-
               </button>
-
             </div>
-
 
             {/* REFRESH */}
 
             <button
               type="button"
-              onClick={() =>
-                refreshRequests(true)
-              }
+              onClick={() => refreshRequests(true)}
               className="flex h-12 w-12 items-center justify-center rounded-xl border border-slate-200 bg-white text-lg hover:bg-slate-50"
               title="Refresh"
             >
               ↻
             </button>
 
-
             {/* USER */}
 
             <div className="hidden items-center gap-3 sm:flex">
-
               <div className="flex h-11 w-11 items-center justify-center rounded-full bg-green-100 font-bold text-green-700">
                 KS
               </div>
 
               <div>
-
-                <p className="text-sm font-bold">
-                  Kabadiwala
-                </p>
+                <p className="text-sm font-bold">Kabadiwala</p>
 
                 <p className="text-xs text-slate-500">
                   Collection Partner
                 </p>
-
               </div>
-
             </div>
-
           </div>
-
         </div>
-
       </header>
-
 
       {/* ===================================================
           TOAST
       =================================================== */}
 
       {message && (
-
         <div className="fixed right-5 top-24 z-[300] max-w-sm rounded-2xl bg-slate-900 px-5 py-4 text-sm font-semibold text-white shadow-2xl">
           {message}
         </div>
-
       )}
-
 
       {/* ===================================================
           MAIN CONTENT
       =================================================== */}
 
       <div className="mx-auto max-w-[1500px] px-5 py-8 md:px-8 lg:px-10">
-
-
         {/* =================================================
             HEADER
         ================================================= */}
 
         <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
-
           <div>
-
             <p className="text-sm font-bold tracking-wide text-amber-500">
               COLLECTION PARTNER DASHBOARD
             </p>
@@ -1642,160 +1050,105 @@ export default function KabadiwalaPage() {
             </h2>
 
             <p className="mt-2 max-w-2xl text-base text-slate-500">
-              Manage customer pickup requests
-              and sell your accumulated bulk scrap
-              directly to recycling companies.
+              Manage customer pickup requests and sell your accumulated bulk
+              scrap directly to recycling companies.
             </p>
-
           </div>
-
 
           {/* SERVICE AREA */}
 
           <div className="w-fit rounded-2xl border border-green-200 bg-green-50 px-6 py-4">
+            <p className="text-xs font-bold text-amber-500">SERVICE AREA</p>
 
-            <p className="text-xs font-bold text-amber-500">
-              SERVICE AREA
-            </p>
-
-            <p className="mt-1 font-bold text-green-900">
-              📍 Kolkata
-            </p>
-
+            <p className="mt-1 font-bold text-green-900">📍 Kolkata</p>
           </div>
-
         </div>
-
 
         {/* =================================================
             SELL SCRAP QUICK CARD
         ================================================= */}
 
         <div className="mt-7 rounded-2xl border border-green-200 bg-gradient-to-r from-green-50 to-white p-6">
-
           <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-
             <div className="flex items-start gap-4">
-
               <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-amber-500 text-2xl text-white">
                 📦
               </div>
 
               <div>
-
                 <h3 className="text-lg font-bold text-green-900">
                   Have bulk scrap to sell?
                 </h3>
 
                 <p className="mt-1 max-w-2xl text-sm text-green-700">
-                  List the scrap you have collected.
-                  Recycling companies can discover
-                  your listing and buy directly from you.
+                  List the scrap you have collected. Recycling companies can
+                  discover your listing and buy directly from you.
                 </p>
-
               </div>
-
             </div>
-
 
             <button
               type="button"
-              onClick={() =>
-                setShowSellPanel(true)
-              }
+              onClick={() => setShowSellPanel(true)}
               className="w-full rounded-xl bg-amber-500 px-5 py-3 text-sm font-bold text-white hover:bg-green-700 lg:w-auto"
             >
               + List Bulk Scrap
             </button>
-
           </div>
-
         </div>
-
 
         {/* =================================================
             PICKUP ALERT
         ================================================= */}
 
         {newRequests > 0 ? (
-
           <button
             type="button"
-            onClick={() =>
-              setActiveTab("new")
-            }
+            onClick={() => setActiveTab("new")}
             className="mt-7 flex w-full items-center justify-between rounded-2xl border border-green-200 bg-green-50 p-5 text-left transition hover:border-green-300 hover:shadow-md"
           >
-
             <div className="flex items-center gap-4">
-
               <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-2xl shadow-sm">
                 🔔
               </div>
 
               <div>
-
                 <h3 className="font-bold text-green-900">
                   New pickup request
-                  {newRequests !== 1
-                    ? "s"
-                    : ""}{" "}
-                  received
+                  {newRequests !== 1 ? "s" : ""} received
                 </h3>
 
                 <p className="mt-1 text-sm text-green-700">
-
                   {newRequests} new request
-                  {newRequests !== 1
-                    ? "s are"
-                    : " is"}{" "}
-                  waiting for your
+                  {newRequests !== 1 ? "s are" : " is"} waiting for your
                   response.
-
                 </p>
-
               </div>
-
             </div>
 
-            <span className="font-bold text-green-700">
-              View →
-            </span>
-
+            <span className="font-bold text-green-700">View →</span>
           </button>
-
         ) : (
-
           <div className="mt-7 flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5">
-
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-50 text-2xl">
               ✓
             </div>
 
             <div>
-
-              <h3 className="font-bold">
-                No new pickup requests
-              </h3>
+              <h3 className="font-bold">No new pickup requests</h3>
 
               <p className="mt-1 text-sm text-slate-500">
-                New customer requests will
-                automatically appear here.
+                New customer requests will automatically appear here.
               </p>
-
             </div>
-
           </div>
-
         )}
-
 
         {/* =================================================
             STAT CARDS
         ================================================= */}
 
         <div className="mt-7 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-
           <StatCard
             icon="♻️"
             title="Pickup Requests"
@@ -1804,13 +1157,11 @@ export default function KabadiwalaPage() {
           />
 
           <StatCard
-            icon="⌛"
+            icon="⏛"
             title="New Requests"
             value={newRequests}
             subtitle="Waiting for response"
-            highlight={
-              newRequests > 0
-            }
+            highlight={newRequests > 0}
           />
 
           <StatCard
@@ -1832,186 +1183,197 @@ export default function KabadiwalaPage() {
             title="Available"
             value={availableListings}
             subtitle="Available for recyclers"
-            highlight={
-              availableListings > 0
-            }
+            highlight={availableListings > 0}
           />
-
         </div>
 
+        {/* =================================================
+            RECYCLER PURCHASE REQUESTS
+        ================================================= */}
+        {scrapOrders.filter((order) => order.orderStatus === "Placed").length >
+          0 && (
+          <section className="mt-8">
+            <div className="mb-4">
+              <h3 className="text-xl font-bold">
+                Recycler Purchase Requests
+              </h3>
+              <p className="mt-1 text-sm text-slate-500">
+                Recycling companies have requested to buy your listed scrap.
+              </p>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {scrapOrders
+                .filter((order) => order.orderStatus === "Placed")
+                .map((order) => (
+                  <div
+                    key={order.id}
+                    className="rounded-2xl border border-amber-200 bg-white p-5 shadow-sm"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-wide text-amber-600">
+                          New Purchase Request
+                        </p>
+                        <h4 className="mt-1 text-lg font-bold text-slate-900">
+                          {order.recyclerName}
+                        </h4>
+                      </div>
+                      <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-700">
+                        {order.orderId}
+                      </span>
+                    </div>
+
+                    <div className="mt-4 rounded-xl bg-slate-50 p-4">
+                      <p className="text-xs font-bold uppercase tracking-wide text-slate-500">
+                        Scrap
+                      </p>
+                      <p className="mt-1 font-bold text-slate-900">
+                        {order.material}
+                      </p>
+                      <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                        <div>
+                          <p className="text-slate-500">Quantity</p>
+                          <p className="font-semibold">{order.quantity}</p>
+                        </div>
+                        <div>
+                          <p className="text-slate-500">Price</p>
+                          <p className="font-semibold">
+                            ₹{order.totalAmount}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex gap-3">
+                      <button
+                        type="button"
+                        disabled={processingOrderId === order.id}
+                        onClick={() => acceptScrapOrder(order.id)}
+                        className="flex-1 rounded-xl bg-green-600 px-4 py-3 text-sm font-bold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {processingOrderId === order.id
+                          ? "Processing..."
+                          : "Accept"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={processingOrderId === order.id}
+                        onClick={() => rejectScrapOrder(order.id)}
+                        className="flex-1 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </section>
+        )}
 
         {/* =================================================
             MY SCRAP LISTINGS
         ================================================= */}
 
         <section className="mt-8">
-
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-
             <div>
-
-              <h3 className="text-xl font-bold">
-                My Bulk Scrap Listings
-              </h3>
+              <h3 className="text-xl font-bold">My Bulk Scrap Listings</h3>
 
               <p className="mt-1 text-sm text-slate-500">
-                Scrap listed here is visible to
-                recycling companies.
+                Scrap listed here is visible to recycling companies.
               </p>
-
             </div>
 
             <button
               type="button"
-              onClick={() =>
-                setShowSellPanel(true)
-              }
+              onClick={() => setShowSellPanel(true)}
               className="rounded-xl bg-amber-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-green-700"
             >
               + Add Listing
             </button>
-
           </div>
 
-
           {listings.length === 0 ? (
-
             <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center">
-
-              <div className="text-5xl">
-                📦
-              </div>
+              <div className="text-5xl">📦</div>
 
               <h3 className="mt-4 text-lg font-bold">
                 No bulk scrap listed yet
               </h3>
 
               <p className="mx-auto mt-2 max-w-md text-sm text-slate-500">
-                When you have accumulated bulk
-                scrap, list it here so recycling
-                companies can buy directly from you.
+                When you have accumulated bulk scrap, list it here so
+                recycling companies can buy directly from you.
               </p>
 
               <button
                 type="button"
-                onClick={() =>
-                  setShowSellPanel(true)
-                }
+                onClick={() => setShowSellPanel(true)}
                 className="mt-5 rounded-xl bg-amber-500 px-5 py-3 text-sm font-bold text-white hover:bg-green-700"
               >
                 List Your First Scrap
               </button>
-
             </div>
-
           ) : (
-
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-
-              {listings.map(
-                (listing) => (
-
-                  <ListingCard
-                    key={
-                      listing.id
-                    }
-                    listing={
-                      listing
-                    }
-                    onView={() =>
-                      setSelectedListing(
-                        listing
-                      )
-                    }
-                  />
-
-                )
-              )}
-
+              {listings.map((listing) => (
+                <ListingCard
+                  key={listing.id}
+                  listing={listing}
+                  onView={() => setSelectedListing(listing)}
+                />
+              ))}
             </div>
-
           )}
-
         </section>
-
 
         {/* =================================================
             PICKUP REQUEST TABS
         ================================================= */}
 
         <div className="mt-10">
-
           <div className="mb-4">
-
-            <h3 className="text-xl font-bold">
-              Customer Pickup Requests
-            </h3>
+            <h3 className="text-xl font-bold">Customer Pickup Requests</h3>
 
             <p className="mt-1 text-sm text-slate-500">
-              Manage scrap collection requests
-              from customers.
+              Manage scrap collection requests from customers.
             </p>
-
           </div>
 
-
           <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-
             <div className="flex min-w-max p-2">
-
               <TabButton
-                active={
-                  activeTab === "all"
-                }
-                onClick={() =>
-                  setActiveTab("all")
-                }
+                active={activeTab === "all"}
+                onClick={() => setActiveTab("all")}
                 label={`All Requests (${totalRequests})`}
               />
 
               <TabButton
-                active={
-                  activeTab === "new"
-                }
-                onClick={() =>
-                  setActiveTab("new")
-                }
+                active={activeTab === "new"}
+                onClick={() => setActiveTab("new")}
                 label={`New (${newRequests})`}
               />
 
               <TabButton
-                active={
-                  activeTab === "accepted"
-                }
-                onClick={() =>
-                  setActiveTab("accepted")
-                }
+                active={activeTab === "accepted"}
+                onClick={() => setActiveTab("accepted")}
                 label={`Accepted (${acceptedRequests})`}
               />
 
               <TabButton
-                active={
-                  activeTab === "completed"
-                }
-                onClick={() =>
-                  setActiveTab("completed")
-                }
+                active={activeTab === "completed"}
+                onClick={() => setActiveTab("completed")}
                 label={`Completed (${completedRequests})`}
               />
-
             </div>
-
           </div>
-
 
           {/* SEARCH */}
 
           <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
-
             <div className="flex flex-col gap-3 md:flex-row">
-
               <div className="relative flex-1">
-
                 <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
                   🔎
                 </span>
@@ -2019,213 +1381,101 @@ export default function KabadiwalaPage() {
                 <input
                   type="text"
                   value={search}
-                  onChange={(e) =>
-                    setSearch(
-                      e.target.value
-                    )
-                  }
+                  onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search material, customer, location, quantity..."
                   className="w-full rounded-xl border border-slate-200 py-3 pl-11 pr-4 outline-none focus:border-green-500"
                 />
-
               </div>
 
-
               <select
-                value={
-                  materialFilter
-                }
-                onChange={(e) =>
-                  setMaterialFilter(
-                    e.target.value
-                  )
-                }
+                value={materialFilter}
+                onChange={(e) => setMaterialFilter(e.target.value)}
                 className="rounded-xl border border-slate-200 bg-white px-4 py-3 outline-none focus:border-green-500 md:w-64"
               >
-
-                <option>
-                  All Materials
-                </option>
-
-                <option>
-                  Paper
-                </option>
-
-                <option>
-                  Plastic
-                </option>
-
-                <option>
-                  Iron
-                </option>
-
-                <option>
-                  Copper
-                </option>
-
-                <option>
-                  E-Waste
-                </option>
-
-                <option>
-                  Aluminium
-                </option>
-
-                <option>
-                  Glass
-                </option>
-
-                <option>
-                  Other
-                </option>
-
-                <option>
-                  Mixed Waste
-                </option>
-
+                <option>All Materials</option>
+                <option>Paper</option>
+                <option>Plastic</option>
+                <option>Iron</option>
+                <option>Copper</option>
+                <option>E-Waste</option>
+                <option>Aluminium</option>
+                <option>Glass</option>
+                <option>Other</option>
+                <option>Mixed Waste</option>
               </select>
-
             </div>
-
           </div>
-
 
           {/* REQUEST LIST */}
 
           <div className="mt-6">
-
             <div className="mb-4">
-
               <p className="text-sm text-slate-500">
                 {filteredRequests.length} request
-                {filteredRequests.length !== 1
-                  ? "s"
-                  : ""}{" "}
-                shown
+                {filteredRequests.length !== 1 ? "s" : ""} shown
               </p>
-
             </div>
 
-
-            {filteredRequests.length ===
-            0 ? (
-
+            {filteredRequests.length === 0 ? (
               <EmptyState
-                tab={
-                  activeTab
-                }
-                totalRequests={
-                  totalRequests
-                }
-                onCreateDemo={
-                  createDemoRequest
-                }
+                tab={activeTab}
+                totalRequests={totalRequests}
+                onCreateDemo={createDemoRequest}
               />
-
             ) : (
-
               <div className="space-y-4">
-
-                {filteredRequests.map(
-                  (request) => (
-
-                    <PickupCard
-                      key={
-                        request.id
-                      }
-                      request={
-                        request
-                      }
-                      onView={() =>
-                        setSelectedRequest(
-                          request
-                        )
-                      }
-                      onAccept={() =>
-                        acceptRequest(
-                          request.id
-                        )
-                      }
-                      onReject={() =>
-                        rejectRequest(
-                          request.id
-                        )
-                      }
-                      onConfirm={() =>
-                        confirmRequest(
-                          request.id
-                        )
-                      }
-                      onComplete={() =>
-                        completeRequest(
-                          request.id
-                        )
-                      }
-                    />
-
-                  )
-                )}
-
+                {filteredRequests.map((request) => (
+                  <PickupCard
+                    key={request.id}
+                    request={request}
+                    onView={() => setSelectedRequest(request)}
+                    onAccept={() => acceptRequest(request.id)}
+                    onReject={() => rejectRequest(request.id)}
+                    onConfirm={() => confirmRequest(request.id)}
+                    onComplete={() => completeRequest(request.id)}
+                  />
+                ))}
               </div>
-
             )}
-
           </div>
-
         </div>
-
 
         {/* =================================================
             PROTOTYPE CONTROLS
         ================================================= */}
 
         <div className="mt-10 rounded-2xl border border-dashed border-slate-300 bg-white p-5">
-
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-
             <div>
-
               <p className="text-xs font-bold tracking-wide text-slate-400">
                 PROTOTYPE TEST CONTROLS
               </p>
 
               <p className="mt-1 text-sm text-slate-500">
-                Test customer pickup requests
-                during development.
+                Test customer pickup requests during development.
               </p>
-
             </div>
 
             <div className="flex flex-wrap gap-3">
-
               <button
                 type="button"
-                onClick={
-                  createDemoRequest
-                }
-                className="rounded-xl bg- px-4 py-2.5 text-sm font-bold text-white hover:bg-green-700"
+                onClick={createDemoRequest}
+                className="rounded-xl bg-amber-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-green-700"
               >
                 + Create Demo Request
               </button>
 
               <button
                 type="button"
-                onClick={
-                  clearAllRequests
-                }
+                onClick={clearAllRequests}
                 className="rounded-xl border border-red-200 bg-white px-4 py-2.5 text-sm font-bold text-red-600 hover:bg-red-50"
               >
                 Clear Requests
               </button>
-
             </div>
-
           </div>
-
         </div>
-
       </div>
-
 
       {/* ===================================================
           LOGOUT
@@ -2233,144 +1483,65 @@ export default function KabadiwalaPage() {
 
       <button
         type="button"
-        onClick={
-          handleLogout
-        }
+        onClick={handleLogout}
         className="fixed bottom-5 left-5 z-50 flex items-center gap-2 rounded-xl border border-red-200 bg-white px-5 py-3 text-sm font-bold text-red-600 shadow-lg transition hover:bg-red-50"
       >
         🚪 Logout
       </button>
-
 
       {/* ===================================================
           PICKUP DETAIL MODAL
       =================================================== */}
 
       {selectedRequest && (
-
         <RequestModal
-          request={
-            selectedRequest
-          }
-          onClose={() =>
-            setSelectedRequest(
-              null
-            )
-          }
-          onAccept={() =>
-            acceptRequest(
-              selectedRequest.id
-            )
-          }
-          onReject={() =>
-            rejectRequest(
-              selectedRequest.id
-            )
-          }
-          onConfirm={() =>
-            confirmRequest(
-              selectedRequest.id
-            )
-          }
-          onComplete={() =>
-            completeRequest(
-              selectedRequest.id
-            )
-          }
+          request={selectedRequest}
+          onClose={() => setSelectedRequest(null)}
+          onAccept={() => acceptRequest(selectedRequest.id)}
+          onReject={() => rejectRequest(selectedRequest.id)}
+          onConfirm={() => confirmRequest(selectedRequest.id)}
+          onComplete={() => completeRequest(selectedRequest.id)}
         />
-
       )}
-
 
       {/* ===================================================
           SELL SCRAP MODAL
       =================================================== */}
 
       {showSellPanel && (
-
         <SellScrapModal
-          material={
-            sellMaterial
-          }
-          setMaterial={
-            setSellMaterial
-          }
-          quantity={
-            sellQuantity
-          }
-          setQuantity={
-            setSellQuantity
-          }
-          price={
-            sellPrice
-          }
-          setPrice={
-            setSellPrice
-          }
-          location={
-            sellLocation
-          }
-          setLocation={
-            setSellLocation
-          }
-          description={
-            sellDescription
-          }
-          setDescription={
-            setSellDescription
-          }
-          imageName={
-            sellImageName
-          }
-          setImageName={
-            setSellImageName
-          }
-          onClose={() =>
-            setShowSellPanel(
-              false
-            )
-          }
-          onSubmit={
-            addScrapListing
-          }
+          material={sellMaterial}
+          setMaterial={setSellMaterial}
+          quantity={sellQuantity}
+          setQuantity={setSellQuantity}
+          price={sellPrice}
+          setPrice={setSellPrice}
+          location={sellLocation}
+          setLocation={setSellLocation}
+          description={sellDescription}
+          setDescription={setSellDescription}
+          imageName={sellImageName}
+          setImageName={setSellImageName}
+          onClose={() => setShowSellPanel(false)}
+          onSubmit={addScrapListing}
         />
-
       )}
-
 
       {/* ===================================================
           LISTING DETAIL MODAL
       =================================================== */}
 
       {selectedListing && (
-
         <ListingModal
-          listing={
-            selectedListing
-          }
-          onClose={() =>
-            setSelectedListing(
-              null
-            )
-          }
-          onSold={() =>
-            markListingSold(
-              selectedListing.id
-            )
-          }
-          onDelete={() =>
-            removeListing(
-              selectedListing.id
-            )
-          }
+          listing={selectedListing}
+          onClose={() => setSelectedListing(null)}
+          onSold={() => markListingSold(selectedListing.id)}
+          onDelete={() => removeListing(selectedListing.id)}
         />
-
       )}
-
     </main>
   );
 }
-
 
 /* =============================================================
    STAT CARD
@@ -2389,52 +1560,32 @@ function StatCard({
   subtitle: string;
   highlight?: boolean;
 }) {
-
   return (
-
     <div
       className={`rounded-2xl border bg-white p-5 ${
-        highlight && value > 0
-          ? "border-green-300"
-          : "border-slate-200"
+        highlight && value > 0 ? "border-green-300" : "border-slate-200"
       }`}
     >
-
       <div className="flex items-start justify-between">
-
         <div>
+          <p className="text-sm text-slate-500">{title}</p>
 
-          <p className="text-sm text-slate-500">
-            {title}
-          </p>
+          <p className="mt-3 text-3xl font-bold">{value}</p>
 
-          <p className="mt-3 text-3xl font-bold">
-            {value}
-          </p>
-
-          <p className="mt-1 text-xs text-slate-400">
-            {subtitle}
-          </p>
-
+          <p className="mt-1 text-xs text-slate-400">{subtitle}</p>
         </div>
 
         <div
           className={`flex h-11 w-11 items-center justify-center rounded-xl text-xl ${
-            highlight &&
-            value > 0
-              ? "bg-green-100"
-              : "bg-slate-50"
+            highlight && value > 0 ? "bg-green-100" : "bg-slate-50"
           }`}
         >
           {icon}
         </div>
-
       </div>
-
     </div>
   );
 }
-
 
 /* =============================================================
    TAB BUTTON
@@ -2449,9 +1600,7 @@ function TabButton({
   onClick: () => void;
   label: string;
 }) {
-
   return (
-
     <button
       type="button"
       onClick={onClick}
@@ -2463,10 +1612,8 @@ function TabButton({
     >
       {label}
     </button>
-
   );
 }
-
 
 /* =============================================================
    PICKUP CARD
@@ -2487,195 +1634,105 @@ function PickupCard({
   onConfirm: () => void;
   onComplete: () => void;
 }) {
-
-  const isPending =
-    request.status ===
-    "Pending";
+  const isPending = request.status === "Pending";
 
   const isAccepted =
-    request.status ===
-      "Accepted" ||
-    request.status ===
-      "Confirmed";
-
+    request.status === "Accepted" || request.status === "Confirmed";
 
   return (
-
     <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:shadow-md">
-
-
       {/* TOP */}
 
       <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-
         <div className="flex items-start gap-4">
-
           <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-green-50 text-2xl">
-
-            {request.requestType ===
-            "Sell Scrap"
-              ? "💰"
-              : "🚛"}
-
+            {request.requestType === "Sell Scrap" ? "💰" : "🚛"}
           </div>
-
 
           <div>
-
             <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-lg font-bold">{request.requestType}</h3>
 
-              <h3 className="text-lg font-bold">
-                {request.requestType}
-              </h3>
-
-              <StatusBadge
-                status={
-                  request.status
-                }
-              />
-
+              <StatusBadge status={request.status} />
             </div>
 
-
-            <p className="mt-1 text-sm text-slate-500">
-              {request.id}
-            </p>
-
+            <p className="mt-1 text-sm text-slate-500">{request.id}</p>
 
             <p className="mt-2 text-sm font-semibold">
-              Customer:{" "}
-              {request.customerName}
+              Customer: {request.customerName}
             </p>
-
           </div>
-
         </div>
-
 
         {/* ACTIONS */}
 
         <div className="flex flex-wrap gap-2">
-
           <button
             type="button"
-            onClick={
-              onView
-            }
+            onClick={onView}
             className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold hover:bg-slate-50"
           >
             View Details
           </button>
 
-
           {isPending && (
-
             <>
-
               <button
                 type="button"
-                onClick={
-                  onReject
-                }
+                onClick={onReject}
                 className="rounded-xl border border-red-200 px-4 py-2.5 text-sm font-bold text-red-600 hover:bg-red-50"
               >
                 Reject
               </button>
 
-
               <button
                 type="button"
-                onClick={
-                  onAccept
-                }
+                onClick={onAccept}
                 className="rounded-xl bg-amber-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-green-700"
               >
                 Accept Pickup
               </button>
-
             </>
-
           )}
 
-
           {isAccepted && (
-
             <button
               type="button"
-              onClick={
-                onComplete
-              }
+              onClick={onComplete}
               className="rounded-xl bg-amber-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-green-700"
             >
               ✓ Complete Pickup
             </button>
-
           )}
-
         </div>
-
       </div>
-
 
       {/* DETAILS */}
 
       <div className="mt-5 grid gap-3 rounded-2xl bg-slate-50 p-4 sm:grid-cols-2 lg:grid-cols-4">
+        <InfoItem label="Material" value={request.material} icon="♻️" />
 
-        <InfoItem
-          label="Material"
-          value={
-            request.material
-          }
-          icon="♻️"
-        />
+        <InfoItem label="Quantity" value={request.quantity} icon="⚖️" />
 
-        <InfoItem
-          label="Quantity"
-          value={
-            request.quantity
-          }
-          icon="⚖️"
-        />
+        <InfoItem label="Date" value={request.date} icon="📅" />
 
-        <InfoItem
-          label="Date"
-          value={
-            request.date
-          }
-          icon="📅"
-        />
-
-        <InfoItem
-          label="Time"
-          value={
-            request.time
-          }
-          icon="🕐"
-        />
-
+        <InfoItem label="Time" value={request.time} icon="🕒" />
       </div>
-
 
       {/* LOCATION */}
 
       <div className="mt-4 rounded-2xl border border-slate-100 p-4">
-
         <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
           PICKUP LOCATION
         </p>
 
-        <p className="mt-1 text-sm font-semibold">
-          📍 {request.location}
-        </p>
-
+        <p className="mt-1 text-sm font-semibold">📍 {request.location}</p>
       </div>
-
 
       {/* ASSIGNED */}
 
       {request.assignedKabadiwala && (
-
         <div className="mt-4 rounded-xl bg-green-50 px-4 py-3">
-
           <p className="text-[10px] font-bold uppercase tracking-wide text-amber-500">
             ASSIGNED COLLECTION PARTNER
           </p>
@@ -2683,15 +1740,11 @@ function PickupCard({
           <p className="mt-1 text-sm font-bold text-green-800">
             {request.assignedKabadiwala}
           </p>
-
         </div>
-
       )}
-
     </div>
   );
 }
-
 
 /* =============================================================
    INFO ITEM
@@ -2706,102 +1759,50 @@ function InfoItem({
   value: string;
   icon: string;
 }) {
-
   return (
-
     <div className="rounded-xl bg-white p-3">
-
       <div className="flex items-center gap-2">
-
-        <span className="text-sm">
-          {icon}
-        </span>
+        <span className="text-sm">{icon}</span>
 
         <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
           {label}
         </p>
-
       </div>
 
-      <p className="mt-2 text-sm font-bold">
-        {value}
-      </p>
-
+      <p className="mt-2 text-sm font-bold">{value}</p>
     </div>
-
   );
 }
-
 
 /* =============================================================
    STATUS BADGE
 ============================================================= */
 
-function StatusBadge({
-  status,
-}: {
-  status: PickupStatus;
-}) {
+function StatusBadge({ status }: { status: PickupStatus }) {
+  let classes = "bg-slate-100 text-slate-600";
 
-  let classes =
-    "bg-slate-100 text-slate-600";
-
-
-  if (
-    status ===
-    "Pending"
-  ) {
-
-    classes =
-      "bg-orange-50 text-orange-700";
-
+  if (status === "Pending") {
+    classes = "bg-orange-50 text-orange-700";
   }
 
-
-  if (
-    status === "Accepted" ||
-    status === "Confirmed"
-  ) {
-
-    classes =
-      "bg-green-50 text-green-700";
-
+  if (status === "Accepted" || status === "Confirmed") {
+    classes = "bg-green-50 text-green-700";
   }
 
-
-  if (
-    status ===
-    "Completed"
-  ) {
-
-    classes =
-      "bg-blue-50 text-blue-700";
-
+  if (status === "Completed") {
+    classes = "bg-blue-50 text-blue-700";
   }
 
-
-  if (
-    status ===
-    "Rejected"
-  ) {
-
-    classes =
-      "bg-red-50 text-red-700";
-
+  if (status === "Rejected") {
+    classes = "bg-red-50 text-red-700";
   }
-
 
   return (
-
-    <span
-      className={`rounded-full px-3 py-1 text-[10px] font-bold ${classes}`}
-    >
+    <span className={`rounded-full px-3 py-1 text-[10px] font-bold ${classes}`}>
       {status}
     </span>
-
   );
 }
-
 
 /* =============================================================
    EMPTY STATE
@@ -2816,102 +1817,56 @@ function EmptyState({
   totalRequests: number;
   onCreateDemo: () => void;
 }) {
-
-  let title =
-    "No pickup requests found.";
-
+  let title = "No pickup requests found.";
   let description =
     "New customer requests will appear here automatically.";
 
-
-  if (
-    tab === "new"
-  ) {
-
-    title =
-      "No new requests.";
-
+  if (tab === "new") {
+    title = "No new requests.";
     description =
       "When a customer creates a pickup request, it will appear here automatically.";
-
   }
 
-
-  if (
-    tab === "accepted"
-  ) {
-
-    title =
-      "No accepted pickups.";
-
-    description =
-      "Accepted customer requests will appear here.";
-
+  if (tab === "accepted") {
+    title = "No accepted pickups.";
+    description = "Accepted customer requests will appear here.";
   }
 
-
-  if (
-    tab === "completed"
-  ) {
-
-    title =
-      "No completed pickups.";
-
-    description =
-      "Completed collections will appear here.";
-
+  if (tab === "completed") {
+    title = "No completed pickups.";
+    description = "Completed collections will appear here.";
   }
-
 
   return (
-
     <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-12 text-center">
-
       <div className="text-5xl">
-
         {tab === "new"
           ? "📥"
-          : tab ===
-              "accepted"
+          : tab === "accepted"
             ? "🚲"
-            : tab ===
-                "completed"
+            : tab === "completed"
               ? "✓"
               : "♻️"}
-
       </div>
 
-
-      <h3 className="mt-5 text-xl font-bold">
-        {title}
-      </h3>
-
+      <h3 className="mt-5 text-xl font-bold">{title}</h3>
 
       <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">
         {description}
       </p>
 
-
-      {totalRequests ===
-        0 && (
-
+      {totalRequests === 0 && (
         <button
           type="button"
-          onClick={
-            onCreateDemo
-          }
+          onClick={onCreateDemo}
           className="mt-6 rounded-xl bg-amber-500 px-5 py-3 text-sm font-bold text-white hover:bg-green-700"
         >
           Create Test Request
         </button>
-
       )}
-
     </div>
-
   );
 }
-
 
 /* =============================================================
    PICKUP REQUEST MODAL
@@ -2932,208 +1887,114 @@ function RequestModal({
   onConfirm: () => void;
   onComplete: () => void;
 }) {
-
-  const isPending =
-    request.status ===
-    "Pending";
+  const isPending = request.status === "Pending";
 
   const isAccepted =
-    request.status ===
-      "Accepted" ||
-    request.status ===
-      "Confirmed";
-
+    request.status === "Accepted" || request.status === "Confirmed";
 
   return (
-
     <div
       className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/50 p-5"
-      onClick={
-        onClose
-      }
+      onClick={onClose}
     >
-
       <div
         className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl"
-        onClick={(event) =>
-          event.stopPropagation()
-        }
+        onClick={(event) => event.stopPropagation()}
       >
-
         <div className="flex items-start justify-between">
-
           <div>
-
-            <p className="text-xs font-bold text-amber-500">
-              PICKUP REQUEST
-            </p>
+            <p className="text-xs font-bold text-amber-500">PICKUP REQUEST</p>
 
             <h2 className="mt-1 text-2xl font-bold">
               {request.requestType}
             </h2>
 
-            <p className="mt-1 text-sm text-slate-500">
-              {request.id}
-            </p>
-
+            <p className="mt-1 text-sm text-slate-500">{request.id}</p>
           </div>
-
 
           <button
             type="button"
-            onClick={
-              onClose
-            }
+            onClick={onClose}
             className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-xl hover:bg-slate-200"
           >
             ×
           </button>
-
         </div>
-
 
         <div className="mt-5">
-
-          <StatusBadge
-            status={
-              request.status
-            }
-          />
-
+          <StatusBadge status={request.status} />
         </div>
 
-
         <div className="mt-5 rounded-2xl bg-green-50 p-5">
-
           <p className="text-[10px] font-bold uppercase tracking-wide text-amber-500">
             CUSTOMER
           </p>
 
           <div className="mt-3 flex items-center gap-3">
-
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-500 font-bold text-white">
-
               {request.customerInitial ||
-                request.customerName
-                  ?.charAt(0)
-                  .toUpperCase() ||
+                request.customerName?.charAt(0).toUpperCase() ||
                 "C"}
-
             </div>
 
             <div>
-
               <p className="font-bold text-green-900">
                 {request.customerName}
               </p>
 
-              <p className="text-sm text-green-700">
-                Customer
-              </p>
-
+              <p className="text-sm text-green-700">Customer</p>
             </div>
-
           </div>
-
         </div>
-
 
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
+          <ModalDetail label="Material" value={request.material} />
 
-          <ModalDetail
-            label="Material"
-            value={
-              request.material
-            }
-          />
+          <ModalDetail label="Quantity" value={request.quantity} />
 
-          <ModalDetail
-            label="Quantity"
-            value={
-              request.quantity
-            }
-          />
+          <ModalDetail label="Pickup Date" value={request.date} />
 
-          <ModalDetail
-            label="Pickup Date"
-            value={
-              request.date
-            }
-          />
-
-          <ModalDetail
-            label="Pickup Time"
-            value={
-              request.time
-            }
-          />
-
+          <ModalDetail label="Pickup Time" value={request.time} />
         </div>
 
-
         <div className="mt-4 rounded-2xl border border-slate-200 p-5">
-
           <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
             PICKUP LOCATION
           </p>
 
-          <p className="mt-2 font-semibold">
-            📍 {request.location}
-          </p>
-
+          <p className="mt-2 font-semibold">📍 {request.location}</p>
         </div>
 
-
         <div className="mt-4 rounded-2xl border border-slate-200 p-5">
-
           <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
             CUSTOMER IMAGE
           </p>
 
           {request.imageName ? (
-
             <div className="mt-3 rounded-xl bg-slate-50 p-4">
-
               <p className="text-sm font-semibold">
-                📷{" "}
-                {request.imageName}
+                📷 {request.imageName}
               </p>
-
             </div>
-
           ) : (
-
-            <p className="mt-2 text-sm text-slate-400">
-              No image uploaded.
-            </p>
-
+            <p className="mt-2 text-sm text-slate-400">No image uploaded.</p>
           )}
-
         </div>
 
-
         <div className="mt-6 flex flex-wrap justify-end gap-3">
-
           <button
             type="button"
-            onClick={
-              onClose
-            }
+            onClick={onClose}
             className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-bold hover:bg-slate-50"
           >
             Close
           </button>
 
-
           {isPending && (
-
             <>
-
               <button
                 type="button"
-                onClick={
-                  onReject
-                }
+                onClick={onReject}
                 className="rounded-xl border border-red-200 px-5 py-3 text-sm font-bold text-red-600 hover:bg-red-50"
               >
                 Reject
@@ -3141,88 +2002,54 @@ function RequestModal({
 
               <button
                 type="button"
-                onClick={
-                  onAccept
-                }
+                onClick={onAccept}
                 className="rounded-xl bg-amber-500 px-5 py-3 text-sm font-bold text-white hover:bg-green-700"
               >
                 Accept Pickup
               </button>
-
             </>
-
           )}
 
-
-          {request.status ===
-            "Accepted" && (
-
+          {request.status === "Accepted" && (
             <button
               type="button"
-              onClick={
-                onConfirm
-              }
+              onClick={onConfirm}
               className="rounded-xl bg-amber-500 px-5 py-3 text-sm font-bold text-white hover:bg-green-700"
             >
               Confirm Pickup
             </button>
-
           )}
 
-
           {isAccepted && (
-
             <button
               type="button"
-              onClick={
-                onComplete
-              }
+              onClick={onComplete}
               className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white hover:bg-blue-700"
             >
               ✓ Mark Completed
             </button>
-
           )}
-
         </div>
-
       </div>
-
     </div>
-
   );
 }
-
 
 /* =============================================================
    MODAL DETAIL
 ============================================================= */
 
-function ModalDetail({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
-
+function ModalDetail({ label, value }: { label: string; value: string }) {
   return (
-
     <div className="rounded-2xl bg-slate-50 p-4">
-
       <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
         {label}
       </p>
 
-      <p className="mt-2 font-bold">
-        {value}
-      </p>
-
+      <p className="mt-2 font-bold">{value}</p>
     </div>
-
   );
 }
-
 
 /* =============================================================
    SELL SCRAP MODAL
@@ -3245,242 +2072,130 @@ function SellScrapModal({
   onSubmit,
 }: {
   material: string;
-  setMaterial: (
-    value: string
-  ) => void;
-
+  setMaterial: (value: string) => void;
   quantity: string;
-  setQuantity: (
-    value: string
-  ) => void;
-
+  setQuantity: (value: string) => void;
   price: string;
-  setPrice: (
-    value: string
-  ) => void;
-
+  setPrice: (value: string) => void;
   location: string;
-  setLocation: (
-    value: string
-  ) => void;
-
+  setLocation: (value: string) => void;
   description: string;
-  setDescription: (
-    value: string
-  ) => void;
-
+  setDescription: (value: string) => void;
   imageName: string;
-  setImageName: (
-    value: string
-  ) => void;
-
+  setImageName: (value: string) => void;
   onClose: () => void;
   onSubmit: () => void;
 }) {
-
   return (
-
     <div
       className="fixed inset-0 z-[250] flex items-center justify-center bg-slate-900/60 p-5"
-      onClick={
-        onClose
-      }
+      onClick={onClose}
     >
-
       <div
         className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white shadow-2xl"
-        onClick={(event) =>
-          event.stopPropagation()
-        }
+        onClick={(event) => event.stopPropagation()}
       >
-
-
         {/* HEADER */}
 
         <div className="flex items-start justify-between border-b border-slate-100 p-6">
-
           <div>
-
             <p className="text-xs font-bold tracking-wide text-amber-500">
               SELL BULK SCRAP
             </p>
 
-            <h2 className="mt-1 text-2xl font-bold">
-              List Your Scrap
-            </h2>
+            <h2 className="mt-1 text-2xl font-bold">List Your Scrap</h2>
 
             <p className="mt-1 text-sm text-slate-500">
-              Your listing will be visible to
-              recycling companies.
+              Your listing will be visible to recycling companies.
             </p>
-
           </div>
-
 
           <button
             type="button"
-            onClick={
-              onClose
-            }
+            onClick={onClose}
             className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-xl hover:bg-slate-200"
           >
             ×
           </button>
-
         </div>
-
 
         {/* FORM */}
 
         <div className="space-y-5 p-6">
-
-
           {/* MATERIAL */}
 
           <div>
-
             <label className="mb-2 block text-sm font-bold">
               Scrap Material
             </label>
 
             <select
-              value={
-                material
-              }
-              onChange={(e) =>
-                setMaterial(
-                  e.target.value
-                )
-              }
+              value={material}
+              onChange={(e) => setMaterial(e.target.value)}
               className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 outline-none focus:border-green-500"
             >
-
-              <option>
-                Paper
-              </option>
-
-              <option>
-                Plastic
-              </option>
-
-              <option>
-                Iron
-              </option>
-
-              <option>
-                Copper
-              </option>
-
-              <option>
-                Aluminium
-              </option>
-
-              <option>
-                E-Waste
-              </option>
-
-              <option>
-                Glass
-              </option>
-
-              <option>
-                Cardboard
-              </option>
-
-              <option>
-                Mixed Scrap
-              </option>
-
-              <option>
-                Other
-              </option>
-
+              <option>Paper</option>
+              <option>Plastic</option>
+              <option>Iron</option>
+              <option>Copper</option>
+              <option>Aluminium</option>
+              <option>E-Waste</option>
+              <option>Glass</option>
+              <option>Cardboard</option>
+              <option>Mixed Scrap</option>
+              <option>Other</option>
             </select>
-
           </div>
-
 
           {/* QUANTITY + PRICE */}
 
           <div className="grid gap-4 sm:grid-cols-2">
-
             <div>
-
-              <label className="mb-2 block text-sm font-bold">
-                Quantity
-              </label>
+              <label className="mb-2 block text-sm font-bold">Quantity</label>
 
               <input
                 type="text"
-                value={
-                  quantity
-                }
-                onChange={(e) =>
-                  setQuantity(
-                    e.target.value
-                  )
-                }
+                value={quantity}
+                onChange={(e) => setQuantity(e.target.value)}
                 placeholder="e.g. 500 kg"
                 className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-green-500"
               />
-
             </div>
 
-
             <div>
-
               <label className="mb-2 block text-sm font-bold">
                 Expected Price
               </label>
 
               <input
                 type="text"
-                value={
-                  price
-                }
-                onChange={(e) =>
-                  setPrice(
-                    e.target.value
-                  )
-                }
+                value={price}
+                onChange={(e) => setPrice(e.target.value)}
                 placeholder="e.g. ₹25,000"
                 className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-green-500"
               />
-
             </div>
-
           </div>
-
 
           {/* LOCATION */}
 
           <div>
-
             <label className="mb-2 block text-sm font-bold">
               Scrap Location
             </label>
 
             <input
               type="text"
-              value={
-                location
-              }
-              onChange={(e) =>
-                setLocation(
-                  e.target.value
-                )
-              }
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
               placeholder="e.g. Salt Lake, Kolkata"
               className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-green-500"
             />
-
           </div>
-
 
           {/* DESCRIPTION */}
 
           <div>
-
             <label className="mb-2 block text-sm font-bold">
               Description
               <span className="ml-1 font-normal text-slate-400">
@@ -3489,26 +2204,17 @@ function SellScrapModal({
             </label>
 
             <textarea
-              value={
-                description
-              }
-              onChange={(e) =>
-                setDescription(
-                  e.target.value
-                )
-              }
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
               rows={4}
               placeholder="Describe the scrap quality, condition, packaging, etc."
               className="w-full resize-none rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-green-500"
             />
-
           </div>
-
 
           {/* IMAGE */}
 
           <div>
-
             <label className="mb-2 block text-sm font-bold">
               Scrap Image
               <span className="ml-1 font-normal text-slate-400">
@@ -3520,87 +2226,58 @@ function SellScrapModal({
               type="file"
               accept="image/*"
               onChange={(e) => {
-
-                const file =
-                  e.target.files?.[0];
+                const file = e.target.files?.[0];
 
                 if (file) {
-
-                  setImageName(
-                    file.name
-                  );
-
+                  setImageName(file.name);
                 }
-
               }}
               className="w-full rounded-xl border border-slate-200 bg-white p-3 text-sm"
             />
 
             {imageName && (
-
-              <p className="mt-2 text-xs text-amber-500">
-                📷 {imageName}
-              </p>
-
+              <p className="mt-2 text-xs text-amber-500">📷 {imageName}</p>
             )}
-
           </div>
-
 
           {/* INFO */}
 
           <div className="rounded-2xl bg-green-50 p-4">
-
             <p className="text-sm font-bold text-green-900">
               ♻️ How this works
             </p>
 
             <p className="mt-1 text-sm leading-6 text-green-700">
-              Your listing will appear on the
-              Recycler Dashboard. Recycling companies
-              can filter materials and contact/buy
-              available bulk scrap.
+              Your listing will appear on the Recycler Dashboard. Recycling
+              companies can filter materials and contact/buy available bulk
+              scrap.
             </p>
-
           </div>
-
 
           {/* BUTTONS */}
 
           <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-
             <button
               type="button"
-              onClick={
-                onClose
-              }
+              onClick={onClose}
               className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-bold hover:bg-slate-50"
             >
               Cancel
             </button>
 
-
             <button
               type="button"
-              onClick={
-                onSubmit
-              }
+              onClick={onSubmit}
               className="rounded-xl bg-amber-500 px-6 py-3 text-sm font-bold text-white hover:bg-green-700"
             >
               List Scrap for Recyclers
             </button>
-
           </div>
-
         </div>
-
       </div>
-
     </div>
-
   );
 }
-
 
 /* =============================================================
    LISTING CARD
@@ -3613,130 +2290,84 @@ function ListingCard({
   listing: ScrapListing;
   onView: () => void;
 }) {
-
-  const isAvailable =
-    listing.status ===
-    "Available";
-
+  const isAvailable = listing.status === "Available";
 
   return (
-
     <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
-
       {/* TOP */}
 
       <div className="flex items-start justify-between gap-3">
-
         <div className="flex items-center gap-3">
-
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-green-50 text-2xl">
             📦
           </div>
 
           <div>
+            <h4 className="font-bold">{listing.material}</h4>
 
-            <h4 className="font-bold">
-              {listing.material}
-            </h4>
-
-            <p className="text-xs text-slate-500">
-              {listing.id}
-            </p>
-
+            <p className="text-xs text-slate-500">{listing.id}</p>
           </div>
-
         </div>
-
 
         <span
           className={`rounded-full px-3 py-1 text-[10px] font-bold ${
             isAvailable
               ? "bg-green-50 text-green-700"
-              : listing.status ===
-                  "Sold"
+              : listing.status === "Sold"
                 ? "bg-slate-100 text-slate-600"
                 : "bg-orange-50 text-orange-700"
           }`}
         >
           {listing.status}
         </span>
-
       </div>
-
 
       {/* DETAILS */}
 
       <div className="mt-5 space-y-3">
-
         <div className="flex justify-between rounded-xl bg-slate-50 p-3">
+          <span className="text-sm text-slate-500">Quantity</span>
 
-          <span className="text-sm text-slate-500">
-            Quantity
-          </span>
-
-          <span className="text-sm font-bold">
-            {listing.quantity}
-          </span>
-
+          <span className="text-sm font-bold">{listing.quantity}</span>
         </div>
 
-
         <div className="flex justify-between rounded-xl bg-slate-50 p-3">
-
-          <span className="text-sm text-slate-500">
-            Expected Price
-          </span>
+          <span className="text-sm text-slate-500">Expected Price</span>
 
           <span className="text-sm font-bold text-green-700">
             {listing.price}
           </span>
-
         </div>
 
-
         <div className="flex justify-between rounded-xl bg-slate-50 p-3">
-
-          <span className="text-sm text-slate-500">
-            Location
-          </span>
+          <span className="text-sm text-slate-500">Location</span>
 
           <span className="max-w-[55%] text-right text-sm font-bold">
             📍 {listing.location}
           </span>
-
         </div>
-
       </div>
-
 
       {/* DESCRIPTION */}
 
       {listing.description && (
-
         <p className="mt-4 line-clamp-2 text-sm leading-5 text-slate-500">
           {listing.description}
         </p>
-
       )}
-
 
       {/* BUTTON */}
 
       <button
         type="button"
-        onClick={
-          onView
-        }
+        onClick={onView}
         className="mt-5 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-bold hover:bg-slate-50"
       >
         View Listing
       </button>
-
     </div>
-
   );
 }
-
 
 /* =============================================================
    LISTING DETAIL MODAL
@@ -3753,93 +2384,61 @@ function ListingModal({
   onSold: () => void;
   onDelete: () => void;
 }) {
-
-  const isAvailable =
-    listing.status ===
-    "Available";
-
+  const isAvailable = listing.status === "Available";
 
   return (
-
     <div
       className="fixed inset-0 z-[250] flex items-center justify-center bg-slate-900/60 p-5"
-      onClick={
-        onClose
-      }
+      onClick={onClose}
     >
-
       <div
         className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-3xl bg-white shadow-2xl"
-        onClick={(event) =>
-          event.stopPropagation()
-        }
+        onClick={(event) => event.stopPropagation()}
       >
-
-
         {/* HEADER */}
 
         <div className="flex items-start justify-between border-b border-slate-100 p-6">
-
           <div>
-
             <p className="text-xs font-bold text-amber-500">
               MY SCRAP LISTING
             </p>
 
-            <h2 className="mt-1 text-2xl font-bold">
-              {listing.material}
-            </h2>
+            <h2 className="mt-1 text-2xl font-bold">{listing.material}</h2>
 
-            <p className="mt-1 text-sm text-slate-500">
-              {listing.id}
-            </p>
-
+            <p className="mt-1 text-sm text-slate-500">{listing.id}</p>
           </div>
-
 
           <button
             type="button"
-            onClick={
-              onClose
-            }
+            onClick={onClose}
             className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-xl hover:bg-slate-200"
           >
             ×
           </button>
-
         </div>
-
 
         {/* CONTENT */}
 
         <div className="space-y-4 p-6">
-
-
           {/* STATUS */}
 
           <div>
-
             <span
               className={`rounded-full px-3 py-1 text-xs font-bold ${
-                listing.status ===
-                "Available"
+                listing.status === "Available"
                   ? "bg-green-50 text-green-700"
-                  : listing.status ===
-                      "Sold"
+                  : listing.status === "Sold"
                     ? "bg-slate-100 text-slate-600"
                     : "bg-orange-50 text-orange-700"
               }`}
             >
               {listing.status}
             </span>
-
           </div>
-
 
           {/* MATERIAL */}
 
           <div className="rounded-2xl bg-green-50 p-5">
-
             <p className="text-xs font-bold uppercase tracking-wide text-amber-500">
               SCRAP MATERIAL
             </p>
@@ -3847,150 +2446,77 @@ function ListingModal({
             <p className="mt-2 text-xl font-bold text-green-900">
               {listing.material}
             </p>
-
           </div>
-
 
           {/* DETAILS */}
 
           <div className="grid gap-4 sm:grid-cols-2">
+            <ModalDetail label="Quantity" value={listing.quantity} />
 
-            <ModalDetail
-              label="Quantity"
-              value={
-                listing.quantity
-              }
-            />
+            <ModalDetail label="Expected Price" value={listing.price} />
 
-            <ModalDetail
-              label="Expected Price"
-              value={
-                listing.price
-              }
-            />
+            <ModalDetail label="Location" value={listing.location} />
 
-            <ModalDetail
-              label="Location"
-              value={
-                listing.location
-              }
-            />
-
-            <ModalDetail
-              label="Seller"
-              value={
-                listing.kabadiwalaName
-              }
-            />
-
+            <ModalDetail label="Seller" value={listing.kabadiwalaName} />
           </div>
-
 
           {/* DESCRIPTION */}
 
           <div className="rounded-2xl border border-slate-200 p-5">
-
             <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
               DESCRIPTION
             </p>
 
             <p className="mt-2 text-sm leading-6 text-slate-600">
-
-              {listing.description ||
-                "No description provided."}
-
+              {listing.description || "No description provided."}
             </p>
-
           </div>
-
 
           {/* IMAGE */}
 
           {listing.imageName && (
-
             <div className="rounded-2xl border border-slate-200 p-5">
-
               <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
                 SCRAP IMAGE
               </p>
 
               <p className="mt-2 text-sm font-semibold">
-                📷{" "}
-                {listing.imageName}
+                📷 {listing.imageName}
               </p>
-
             </div>
-
           )}
-
 
           {/* ACTIONS */}
 
           <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:justify-end">
-
             <button
               type="button"
-              onClick={
-                onDelete
-              }
+              onClick={onDelete}
               className="rounded-xl border border-red-200 px-5 py-3 text-sm font-bold text-red-600 hover:bg-red-50"
             >
               Delete Listing
             </button>
 
-
             {isAvailable && (
-
               <button
                 type="button"
-                onClick={
-                  onSold
-                }
+                onClick={onSold}
                 className="rounded-xl bg-amber-500 px-5 py-3 text-sm font-bold text-white hover:bg-green-700"
               >
                 ✓ Mark as Sold
               </button>
-
             )}
-
 
             <button
               type="button"
-              onClick={
-                onClose
-              }
+              onClick={onClose}
               className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-bold hover:bg-slate-50"
             >
               Close
             </button>
-
           </div>
-
         </div>
-
       </div>
-
     </div>
-
-  );
-}
-
-
-/* =============================================================
-   DEMO DATE
-============================================================= */
-
-function formatDateForDemo() {
-
-  const date =
-    new Date();
-
-  return date.toLocaleDateString(
-    "en-IN",
-    {
-      day: "numeric",
-      month: "long",
-      year: "numeric",
-    }
   );
 }

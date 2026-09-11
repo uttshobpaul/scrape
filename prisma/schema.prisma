@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ListingStatus {
+  Available
+  Sold
+  Reserved
+}
+
+enum PickupStatus {
+  Pending
+  Accepted
+  Confirmed
+  Completed
+  Rejected
+}
+
+model ScrapListing {
+  id             String        @id @default(cuid())
+  material       String
+  quantity       String
+  price          String
+  location       String
+  description    String?
+  imageName      String?
+  status         ListingStatus @default(Available)
+  kabadiwalaName String
+  kabadiwalaId   String?
+  buyerName      String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model PickupRequest {
+  id                 String       @id @default(cuid())
+  displayId          String       @unique
+  customerName       String
+  customerInitial    String
+  requestType        String
+  material           String
+  quantity           String
+  location           String
+  date               String
+  time               String
+  imageName          String       @default("")
+  status             PickupStatus @default(Pending)
+  assignedKabadiwala String?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+}
+
+
+enum PaymentStatus {
+  Pending
+  Success
+  Failed
+}
+
+enum OrderStatus {
+  Placed
+  Confirmed
+  Completed
+  Cancelled
+}
+
+model ScrapOrder {
+  id                    String        @id @default(cuid())
+  orderId               String        @unique
+
+  listingId             String
+  material              String
+  quantity              String
+  price                 String
+  totalAmount           String
+
+  kabadiwalaName        String
+  kabadiwalaId          String?
+
+  recyclerName          String
+  recyclerId            String?
+
+  paymentStatus         PaymentStatus @default(Pending)
+  orderStatus           OrderStatus   @default(Placed)
+
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+}

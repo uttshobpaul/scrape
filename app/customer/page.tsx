@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ChangeEvent } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 
 /* =============================================================
    TYPES
@@ -231,81 +231,46 @@ export default function CustomerPage() {
      AND KABADIWALA FOR THE PROTOTYPE.
   ========================================================= */
 
-  const createPickupRequest = (
+  const createPickupRequest = async (
     requestType: "Sell Scrap" | "Pick & Dump"
   ) => {
-    const request: PickupRequest = {
-      id: `#PK${Date.now().toString().slice(-6)}`,
-
+    const request = {
       customerName: "Uttshob",
-
       customerInitial: "U",
-
       requestType,
-
       material:
         requestType === "Sell Scrap"
           ? selectedMaterial
           : "Mixed Waste",
-
       quantity: quantity
         ? `${quantity} kg`
         : "Not specified",
-
       location,
-
       date: formatDate(pickupDate),
-
       time: formatTime(pickupTime),
-
       imageName: imageName || "",
-
-      status: "Pending",
-
-      assignedKabadiwala: null,
-
-      createdAt: new Date().toISOString(),
     };
 
-    /* Get old requests */
+    const response = await fetch("/api/pickups", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    });
 
-    let existingRequests: PickupRequest[] = [];
+    const data = await response.json();
 
-    try {
-      const stored =
-        localStorage.getItem(
-          PICKUP_REQUESTS_KEY
-        );
-
-      if (stored) {
-        existingRequests = JSON.parse(stored);
-      }
-    } catch {
-      existingRequests = [];
+    if (!response.ok) {
+      throw new Error(data.error || "Unable to create pickup request.");
     }
 
-    /* Add newest request at beginning */
-
-    const updatedRequests = [
-      request,
-      ...existingRequests,
-    ];
-
-    /* Save */
-
-    localStorage.setItem(
-      PICKUP_REQUESTS_KEY,
-      JSON.stringify(updatedRequests)
-    );
-
-    return request;
+    return data;
   };
 
   /* =========================================================
      SELL SUBMIT
   ========================================================= */
 
-  const submitSell = () => {
+  const submitSell = async () => {
     if (!quantity.trim()) {
       showMessage(
         "Please enter the approximate quantity."
@@ -332,8 +297,14 @@ export default function CustomerPage() {
 
     /* CREATE REQUEST */
 
-    const request =
-      createPickupRequest("Sell Scrap");
+    let request;
+    try {
+      request = await createPickupRequest("Sell Scrap");
+    } catch (error) {
+      console.error(error);
+      showMessage("Unable to save pickup request to the database.");
+      return;
+    }
 
     console.log(
       "New Kabadiwala pickup request:",
@@ -355,7 +326,7 @@ export default function CustomerPage() {
      DUMP SUBMIT
   ========================================================= */
 
-  const submitDump = () => {
+  const submitDump = async () => {
     if (!location.trim()) {
       showMessage(
         "Please enter your pickup location."
@@ -375,8 +346,14 @@ export default function CustomerPage() {
 
     /* CREATE REQUEST */
 
-    const request =
-      createPickupRequest("Pick & Dump");
+    let request;
+    try {
+      request = await createPickupRequest("Pick & Dump");
+    } catch (error) {
+      console.error(error);
+      showMessage("Unable to save pickup request to the database.");
+      return;
+    }
 
     console.log(
       "New Kabadiwala pickup request:",
@@ -1974,48 +1951,39 @@ function MyPickups({
 }: {
   onBack: () => void;
 }) {
-  const [requests, setRequests] = useState<
-    PickupRequest[]
-  >(() => {
-    if (
-      typeof window ===
-      "undefined"
-    ) {
-      return [];
-    }
+  const [requests, setRequests] = useState<PickupRequest[]>([]);
 
+  const refreshRequests = async () => {
     try {
-      const stored =
-        localStorage.getItem(
-          PICKUP_REQUESTS_KEY
-        );
+      const response = await fetch("/api/pickups", {
+        method: "GET",
+        cache: "no-store",
+      });
 
-      return stored
-        ? JSON.parse(stored)
-        : [];
-    } catch {
-      return [];
-    }
-  });
+      if (!response.ok) {
+        throw new Error("Unable to load pickup requests.");
+      }
 
-  /* Refresh requests */
-
-  const refreshRequests = () => {
-    try {
-      const stored =
-        localStorage.getItem(
-          PICKUP_REQUESTS_KEY
-        );
+      const data = await response.json();
+      const rows = Array.isArray(data) ? data : [];
 
       setRequests(
-        stored
-          ? JSON.parse(stored)
-          : []
+        rows.map((row) => ({
+          ...row,
+          id: row.displayId ?? row.id,
+          assignedKabadiwala: row.assignedKabadiwala ?? null,
+          imageName: row.imageName ?? "",
+        }))
       );
-    } catch {
+    } catch (error) {
+      console.error("Failed to load pickup requests:", error);
       setRequests([]);
     }
   };
+
+  useEffect(() => {
+    void refreshRequests();
+  }, []);
 
   return (
     <div>
