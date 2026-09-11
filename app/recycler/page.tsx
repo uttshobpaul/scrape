@@ -1,220 +1,912 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-type MaterialLot = {
-  id: number;
+/* =========================================================
+   TYPES
+========================================================= */
+
+type ListingStatus = "Available" | "Sold" | "Reserved";
+
+type ScrapListing = {
+  id: string;
   material: string;
-  icon: string;
   quantity: string;
-  seller: string;
-  location: string;
-  distance: string;
   price: string;
-  total: string;
-  condition: string;
-  posted: string;
-  verified: boolean;
-  status: "Available" | "Requested";
+  location: string;
+  description?: string;
+  imageName?: string;
+  imageUrl?: string;
+  status: ListingStatus;
+  kabadiwalaName: string;
+  createdAt?: string;
+  buyerName?: string;
 };
 
-const initialLots: MaterialLot[] = [
-  {
-    id: 1,
-    material: "Copper",
-    icon: "🔶",
-    quantity: "82 kg",
-    seller: "Maa Tara Scrap Center",
-    location: "Salt Lake",
-    distance: "3.2 km",
-    price: "₹700",
-    total: "₹57,400",
-    condition: "Good",
-    posted: "20 min ago",
-    verified: true,
-    status: "Available",
-  },
-  {
-    id: 2,
-    material: "Aluminium",
-    icon: "🥫",
-    quantity: "95 kg",
-    seller: "Green Scrap Hub",
-    location: "New Town",
-    distance: "5.1 km",
-    price: "₹180",
-    total: "₹17,100",
-    condition: "Mixed",
-    posted: "45 min ago",
-    verified: true,
-    status: "Available",
-  },
-  {
-    id: 3,
-    material: "E-Waste",
-    icon: "💻",
-    quantity: "45 kg",
-    seller: "Raju Kabadiwala",
-    location: "Rajarhat",
-    distance: "6.4 km",
-    price: "₹120",
-    total: "₹5,400",
-    condition: "Sorted",
-    posted: "1 hour ago",
-    verified: true,
-    status: "Available",
-  },
-  {
-    id: 4,
-    material: "Iron",
-    icon: "🔩",
-    quantity: "340 kg",
-    seller: "Bapi Scrap Collection",
-    location: "Dum Dum",
-    distance: "8.2 km",
-    price: "₹38",
-    total: "₹12,920",
-    condition: "Mixed",
-    posted: "2 hours ago",
-    verified: true,
-    status: "Available",
-  },
-  {
-    id: 5,
-    material: "Copper Cable",
-    icon: "🔌",
-    quantity: "120 kg",
-    seller: "City Scrap Point",
-    location: "Howrah",
-    distance: "11.5 km",
-    price: "₹680",
-    total: "₹81,600",
-    condition: "Sorted",
-    posted: "3 hours ago",
-    verified: true,
-    status: "Available",
-  },
+type FilterMaterial =
+  | "All Materials"
+  | "Paper"
+  | "Plastic"
+  | "Iron"
+  | "Copper"
+  | "Aluminium"
+  | "E-Waste"
+  | "Glass"
+  | "Cardboard"
+  | "Mixed Scrap"
+  | "Other";
+
+type SortOption =
+  | "Newest"
+  | "Price Low to High"
+  | "Price High to Low";
+
+/*
+  This is the original expected key.
+
+  The code below ALSO scans LocalStorage for other arrays
+  containing Kabadiwala-style listings.
+*/
+const STORAGE_KEY = "scrapsaathi_scrap_listings";
+
+const POSSIBLE_STORAGE_KEYS = [
+  "scrapsaathi_scrap_listings",
+  "scrapsaathi_kabadiwala_listings",
+  "kabadiwala_scrap_listings",
+  "kabadiwalaListings",
+  "scrapListings",
+  "scrap_listings",
+  "sellListings",
+  "kabadiwalaSellListings",
 ];
 
+/* =========================================================
+   MAIN PAGE
+========================================================= */
+
 export default function RecyclerPage() {
-  const [lots, setLots] = useState<MaterialLot[]>(initialLots);
+  const [listings, setListings] = useState<ScrapListing[]>([]);
 
-  const [activeTab, setActiveTab] = useState<
-    "marketplace" | "requirements" | "purchases"
-  >("marketplace");
+  const [search, setSearch] = useState("");
 
-  const [selectedMaterial, setSelectedMaterial] = useState("All");
+  const [materialFilter, setMaterialFilter] =
+    useState<FilterMaterial>("All Materials");
 
-  const [selectedLot, setSelectedLot] =
-    useState<MaterialLot | null>(null);
+  const [locationFilter, setLocationFilter] =
+    useState("All Locations");
 
-  const [notification, setNotification] = useState("");
+  const [sortBy, setSortBy] =
+    useState<SortOption>("Newest");
 
-  const materials = [
-    "All",
-    "Copper",
-    "Aluminium",
-    "E-Waste",
-    "Iron",
-    "Copper Cable",
-  ];
+  const [selectedListing, setSelectedListing] =
+    useState<ScrapListing | null>(null);
 
-  const filteredLots =
-    selectedMaterial === "All"
-      ? lots
-      : lots.filter(
-          (lot) => lot.material === selectedMaterial
+  const [message, setMessage] = useState("");
+
+  const [showBought, setShowBought] =
+    useState(false);
+
+  /* =========================================================
+     LOAD LISTINGS ON PAGE LOAD
+  ========================================================= */
+
+  useEffect(() => {
+    loadListings();
+
+    /*
+      Listen for changes from another tab/window.
+    */
+    const handleStorage = () => {
+      loadListings();
+    };
+
+    window.addEventListener(
+      "storage",
+      handleStorage
+    );
+
+    /*
+      BroadcastChannel allows the Kabadiwala page
+      and Recycler page to communicate if they are
+      open in different tabs.
+    */
+    let channel: BroadcastChannel | null = null;
+
+    try {
+      channel = new BroadcastChannel(
+        "scrapsaathi_updates"
+      );
+
+      channel.onmessage = () => {
+        loadListings();
+      };
+    } catch {
+      channel = null;
+    }
+
+    /*
+      Extra refresh.
+
+      This is useful when both pages are open
+      in the same browser.
+    */
+    const interval = setInterval(() => {
+      loadListings();
+    }, 1000);
+
+    return () => {
+      window.removeEventListener(
+        "storage",
+        handleStorage
+      );
+
+      if (channel) {
+        channel.close();
+      }
+
+      clearInterval(interval);
+    };
+  }, []);
+
+  /* =========================================================
+     LOAD ALL KABADIWALA LISTINGS
+  ========================================================= */
+
+  function loadListings() {
+    try {
+      const foundListings: ScrapListing[] = [];
+
+      /*
+        -------------------------------------------------------
+        1. FIRST CHECK THE EXPECTED KEY
+        -------------------------------------------------------
+      */
+
+      for (const key of POSSIBLE_STORAGE_KEYS) {
+        const raw = localStorage.getItem(key);
+
+        if (!raw) {
+          continue;
+        }
+
+        try {
+          const parsed = JSON.parse(raw);
+
+          if (Array.isArray(parsed)) {
+            for (const item of parsed) {
+              const normalized =
+                normalizeListing(item);
+
+              if (normalized) {
+                foundListings.push(normalized);
+              }
+            }
+          }
+        } catch {
+          /*
+            Ignore invalid JSON in one key.
+          */
+        }
+      }
+
+      /*
+        -------------------------------------------------------
+        2. SCAN OTHER LOCALSTORAGE KEYS
+        -------------------------------------------------------
+
+        This is the important part.
+
+        If your Kabadiwala page uses a key that is
+        NOT included above, this scanner can still
+        find it when the stored value is an array
+        containing listing-like objects.
+      */
+
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+
+        if (!key) {
+          continue;
+        }
+
+        /*
+          We already checked these keys.
+        */
+        if (
+          POSSIBLE_STORAGE_KEYS.includes(
+            key
+          )
+        ) {
+          continue;
+        }
+
+        /*
+          Ignore obviously unrelated application
+          storage.
+        */
+        const lowerKey =
+          key.toLowerCase();
+
+        const looksRelevant =
+          lowerKey.includes("scrap") ||
+          lowerKey.includes("kabadi") ||
+          lowerKey.includes("sell") ||
+          lowerKey.includes("listing") ||
+          lowerKey.includes("waste");
+
+        if (!looksRelevant) {
+          continue;
+        }
+
+        const raw =
+          localStorage.getItem(key);
+
+        if (!raw) {
+          continue;
+        }
+
+        try {
+          const parsed = JSON.parse(raw);
+
+          if (!Array.isArray(parsed)) {
+            continue;
+          }
+
+          for (const item of parsed) {
+            const normalized =
+              normalizeListing(item);
+
+            if (normalized) {
+              foundListings.push(normalized);
+            }
+          }
+        } catch {
+          /*
+            Ignore invalid values.
+          */
+        }
+      }
+
+      /*
+        -------------------------------------------------------
+        3. REMOVE DUPLICATES
+        -------------------------------------------------------
+      */
+
+      const uniqueListings =
+        removeDuplicateListings(
+          foundListings
         );
 
-  const showNotification = (message: string) => {
-    setNotification(message);
+      /*
+        -------------------------------------------------------
+        4. SORT BY NEWEST
+        -------------------------------------------------------
+      */
 
-    setTimeout(() => {
-      setNotification("");
-    }, 3000);
-  };
+      uniqueListings.sort(
+        (a, b) => {
+          const dateA =
+            a.createdAt
+              ? new Date(
+                  a.createdAt
+                ).getTime()
+              : 0;
 
-  const requestPurchase = (id: number) => {
-    const lot = lots.find((item) => item.id === id);
+          const dateB =
+            b.createdAt
+              ? new Date(
+                  b.createdAt
+                ).getTime()
+              : 0;
 
-    if (!lot) return;
+          return dateB - dateA;
+        }
+      );
 
-    if (lot.status === "Requested") {
+      setListings(uniqueListings);
+    } catch (error) {
+      console.error(
+        "Unable to load Kabadiwala listings:",
+        error
+      );
+
+      setListings([]);
+    }
+  }
+
+  /* =========================================================
+     NORMALIZE LISTING
+  ========================================================= */
+
+  function normalizeListing(
+    item: any
+  ): ScrapListing | null {
+    if (
+      !item ||
+      typeof item !== "object"
+    ) {
+      return null;
+    }
+
+    /*
+      Different pages may use different property names.
+
+      Example:
+      material / category / type
+      quantity / weight / amount
+      price / expectedPrice / amount
+      location / city / area
+      name / kabadiwalaName / sellerName
+    */
+
+    const material =
+      firstString(
+        item.material,
+        item.category,
+        item.scrapType,
+        item.type,
+        item.product,
+        item.materialType
+      );
+
+    const quantity =
+      firstString(
+        item.quantity,
+        item.weight,
+        item.qty,
+        item.amount,
+        item.quantityValue
+      );
+
+    const price =
+      firstString(
+        item.price,
+        item.expectedPrice,
+        item.sellingPrice,
+        item.rate,
+        item.totalPrice
+      );
+
+    const location =
+      firstString(
+        item.location,
+        item.area,
+        item.city,
+        item.address,
+        item.pickupLocation
+      );
+
+    const kabadiwalaName =
+      firstString(
+        item.kabadiwalaName,
+        item.kabadiwala,
+        item.sellerName,
+        item.seller,
+        item.ownerName,
+        item.userName,
+        item.name,
+        "Local Kabadiwala"
+      );
+
+    /*
+      A real listing should contain at least
+      material + quantity + price.
+
+      This prevents unrelated LocalStorage
+      arrays from appearing.
+    */
+
+    if (
+      !material &&
+      !quantity &&
+      !price
+    ) {
+      return null;
+    }
+
+    const id =
+      firstString(
+        item.id,
+        item.listingId,
+        item.scrapId,
+        item.productId
+      ) ||
+      generateListingId();
+
+    const status =
+      normalizeStatus(
+        firstString(
+          item.status,
+          item.listingStatus,
+          item.availability
+        )
+      );
+
+    const description =
+      firstString(
+        item.description,
+        item.details,
+        item.notes,
+        item.remark
+      );
+
+    const imageName =
+      firstString(
+        item.imageName,
+        item.fileName,
+        item.image,
+        item.photoName
+      );
+
+    const imageUrl =
+      firstString(
+        item.imageUrl,
+        item.photoUrl,
+        item.imageSrc,
+        item.imageBase64
+      );
+
+    const createdAt =
+      firstString(
+        item.createdAt,
+        item.created_at,
+        item.date,
+        item.timestamp,
+        item.listedAt
+      );
+
+    return {
+      id,
+      material:
+        material || "Mixed Scrap",
+      quantity:
+        quantity || "Not specified",
+      price:
+        price || "Price not specified",
+      location:
+        location || "Location not specified",
+      description,
+      imageName,
+      imageUrl,
+      status,
+      kabadiwalaName,
+      createdAt,
+      buyerName:
+        firstString(
+          item.buyerName,
+          item.buyer
+        ),
+    };
+  }
+
+  /* =========================================================
+     SAVE UPDATED LISTINGS
+  ========================================================= */
+
+  function saveListings(
+    updatedListings: ScrapListing[]
+  ) {
+    /*
+      Save the marketplace state to the
+      main marketplace key.
+    */
+
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify(updatedListings)
+    );
+
+    setListings(updatedListings);
+
+    /*
+      Tell other pages/tabs that listings changed.
+    */
+
+    try {
+      const channel =
+        new BroadcastChannel(
+          "scrapsaathi_updates"
+        );
+
+      channel.postMessage({
+        type: "LISTINGS_UPDATED",
+      });
+
+      channel.close();
+    } catch {
+      /*
+        BroadcastChannel unavailable.
+      */
+    }
+  }
+
+  /* =========================================================
+     BUY LISTING
+  ========================================================= */
+
+  function buyListing(
+    listingId: string
+  ) {
+    const listing =
+      listings.find(
+        (item) =>
+          item.id === listingId
+      );
+
+    if (!listing) {
       return;
     }
 
-    setLots((currentLots) =>
-      currentLots.map((item) =>
-        item.id === id
-          ? {
-              ...item,
-              status: "Requested",
-            }
-          : item
-      )
+    if (
+      listing.status !==
+      "Available"
+    ) {
+      showMessage(
+        "This scrap listing is no longer available."
+      );
+
+      return;
+    }
+
+    const confirmed =
+      window.confirm(
+        `Buy ${listing.material} (${listing.quantity}) from ${listing.kabadiwalaName} for ${listing.price}?`
+      );
+
+    if (!confirmed) {
+      return;
+    }
+
+    const updatedListings =
+      listings.map(
+        (item) =>
+          item.id === listingId
+            ? {
+                ...item,
+                status:
+                  "Sold" as ListingStatus,
+                buyerName:
+                  "Recycler Company",
+              }
+            : item
+      );
+
+    saveListings(
+      updatedListings
     );
 
-    showNotification(
-      `Purchase request sent to ${lot.seller}.`
+    setSelectedListing(null);
+
+    showMessage(
+      `Purchase successful. ${listing.material} has been bought from ${listing.kabadiwalaName}.`
     );
-  };
+  }
+
+  /* =========================================================
+     MESSAGE
+  ========================================================= */
+
+  function showMessage(
+    text: string
+  ) {
+    setMessage(text);
+
+    setTimeout(() => {
+      setMessage("");
+    }, 3500);
+  }
+
+  /* =========================================================
+     LOGOUT
+  ========================================================= */
+
+  function handleLogout() {
+    const confirmed =
+      window.confirm(
+        "Are you sure you want to logout?"
+      );
+
+    if (!confirmed) {
+      return;
+    }
+
+    window.location.href = "/";
+  }
+
+  /* =========================================================
+     LOCATIONS
+  ========================================================= */
+
+  const locations =
+    useMemo(() => {
+      const unique =
+        Array.from(
+          new Set(
+            listings
+              .map(
+                (listing) =>
+                  listing.location
+              )
+              .filter(Boolean)
+          )
+        );
+
+      return unique;
+    }, [listings]);
+
+  /* =========================================================
+     FILTERED LISTINGS
+  ========================================================= */
+
+  const filteredListings =
+    useMemo(() => {
+      let result =
+        listings.filter(
+          (listing) => {
+            const searchText =
+              search
+                .toLowerCase()
+                .trim();
+
+            const matchesSearch =
+              !searchText ||
+              listing.material
+                .toLowerCase()
+                .includes(searchText) ||
+              listing.quantity
+                .toLowerCase()
+                .includes(searchText) ||
+              listing.location
+                .toLowerCase()
+                .includes(searchText) ||
+              listing.kabadiwalaName
+                .toLowerCase()
+                .includes(searchText) ||
+              (
+                listing.description ||
+                ""
+              )
+                .toLowerCase()
+                .includes(searchText);
+
+            const matchesMaterial =
+              materialFilter ===
+                "All Materials" ||
+              normalizeMaterial(
+                listing.material
+              ) ===
+                normalizeMaterial(
+                  materialFilter
+                );
+
+            const matchesLocation =
+              locationFilter ===
+                "All Locations" ||
+              listing.location ===
+                locationFilter;
+
+            return (
+              matchesSearch &&
+              matchesMaterial &&
+              matchesLocation
+            );
+          }
+        );
+
+      /*
+        PRICE LOW TO HIGH
+      */
+
+      if (
+        sortBy ===
+        "Price Low to High"
+      ) {
+        result = [
+          ...result,
+        ].sort(
+          (a, b) =>
+            extractPrice(
+              a.price
+            ) -
+            extractPrice(
+              b.price
+            )
+        );
+      }
+
+      /*
+        PRICE HIGH TO LOW
+      */
+
+      if (
+        sortBy ===
+        "Price High to Low"
+      ) {
+        result = [
+          ...result,
+        ].sort(
+          (a, b) =>
+            extractPrice(
+              b.price
+            ) -
+            extractPrice(
+              a.price
+            )
+        );
+      }
+
+      /*
+        NEWEST
+      */
+
+      if (
+        sortBy ===
+        "Newest"
+      ) {
+        result = [
+          ...result,
+        ].sort(
+          (a, b) => {
+            const dateA =
+              a.createdAt
+                ? new Date(
+                    a.createdAt
+                  ).getTime()
+                : 0;
+
+            const dateB =
+              b.createdAt
+                ? new Date(
+                    b.createdAt
+                  ).getTime()
+                : 0;
+
+            return dateB - dateA;
+          }
+        );
+      }
+
+      return result;
+    }, [
+      listings,
+      search,
+      materialFilter,
+      locationFilter,
+      sortBy,
+    ]);
+
+  /* =========================================================
+     STATISTICS
+  ========================================================= */
+
+  const totalListings =
+    listings.length;
+
+  const availableListings =
+    listings.filter(
+      (listing) =>
+        listing.status ===
+        "Available"
+    ).length;
+
+  const soldListings =
+    listings.filter(
+      (listing) =>
+        listing.status ===
+        "Sold"
+    ).length;
+
+  const totalKabadiwalas =
+    new Set(
+      listings.map(
+        (listing) =>
+          listing.kabadiwalaName
+      )
+    ).size;
+
+  /*
+    By default only Available listings are shown.
+  */
+
+  const visibleListings =
+    showBought
+      ? filteredListings
+      : filteredListings.filter(
+          (listing) =>
+            listing.status ===
+            "Available"
+        );
+
+  /* =========================================================
+     RESET FILTERS
+  ========================================================= */
+
+  function resetFilters() {
+    setSearch("");
+
+    setMaterialFilter(
+      "All Materials"
+    );
+
+    setLocationFilter(
+      "All Locations"
+    );
+
+    setSortBy("Newest");
+  }
+
+  /* =========================================================
+     UI
+  ========================================================= */
 
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-900">
+    <main className="min-h-screen bg-[#f5f9ff] text-slate-900">
 
-      {/* ================= NAVBAR ================= */}
+      {/* =====================================================
+          NAVBAR
+      ===================================================== */}
 
-      <header className="border-b border-slate-200 bg-white">
+      <header className="sticky top-0 z-40 border-b border-blue-100 bg-white">
 
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5">
+        <div className="mx-auto flex min-h-[72px] max-w-[1500px] items-center justify-between gap-4 px-5 py-3 md:px-8">
 
-          <a
-            href="/"
-            className="flex items-center gap-3"
-          >
+          {/* LOGO */}
 
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-green-600 text-xl text-white">
+          <div className="flex items-center gap-3">
+
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-2xl text-white shadow-sm">
               ♻
             </div>
 
             <div>
-              <h1 className="text-lg font-bold">
+
+              <h1 className="text-xl font-bold tracking-tight">
+
                 Scrap
-                <span className="text-green-600">
+                <span className="text-blue-600">
                   Saathi
                 </span>
+
               </h1>
 
-              <p className="text-[10px] text-slate-500">
-                Recycler Partner
+              <p className="text-[11px] text-slate-500">
+                Recycler Marketplace
               </p>
+
             </div>
 
-          </a>
+          </div>
 
-          <div className="flex items-center gap-3">
+          {/* RIGHT SIDE */}
+
+          <div className="flex items-center gap-2 md:gap-3">
 
             <button
               type="button"
-              className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 hover:bg-slate-50"
+              onClick={() =>
+                loadListings()
+              }
+              className="flex h-12 w-12 items-center justify-center rounded-xl border border-slate-200 bg-white text-lg hover:bg-blue-50"
+              title="Refresh listings"
             >
-              🔔
+              ↻
             </button>
 
-            <div className="hidden items-center gap-2 sm:flex">
+            <div className="hidden items-center gap-3 sm:flex">
 
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-sm font-bold text-blue-700">
-                ER
+              <div className="flex h-11 w-11 items-center justify-center rounded-full bg-blue-100 font-bold text-blue-700">
+                RC
               </div>
 
               <div>
 
                 <p className="text-sm font-bold">
-                  EcoRecycle Industries
+                  Recycler Company
                 </p>
 
-                <p className="text-[10px] text-slate-400">
-                  Verified Recycler
+                <p className="text-xs text-slate-500">
+                  Recycling Partner
                 </p>
 
               </div>
@@ -227,425 +919,478 @@ export default function RecyclerPage() {
 
       </header>
 
+      {/* =====================================================
+          TOAST
+      ===================================================== */}
 
-      {/* ================= NOTIFICATION ================= */}
-
-      {notification && (
-        <div className="fixed right-5 top-20 z-[100] rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-xl">
-          ✓ {notification}
+      {message && (
+        <div className="fixed right-5 top-24 z-[300] max-w-sm rounded-2xl bg-slate-900 px-5 py-4 text-sm font-semibold text-white shadow-2xl">
+          {message}
         </div>
       )}
 
+      {/* =====================================================
+          MAIN
+      ===================================================== */}
 
-      {/* ================= MAIN ================= */}
+      <div className="mx-auto max-w-[1500px] px-5 py-8 md:px-8 lg:px-10">
 
-      <div className="mx-auto max-w-7xl px-5 py-8">
+        {/* ===================================================
+            PAGE HEADER
+        =================================================== */}
 
-        {/* PAGE HEADER */}
-
-        <div className="flex flex-col justify-between gap-5 md:flex-row md:items-end">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
 
           <div>
 
-            <p className="text-sm font-bold text-blue-600">
+            <p className="text-sm font-bold tracking-wide text-blue-600">
               RECYCLER MARKETPLACE
             </p>
 
             <h2 className="mt-2 text-3xl font-bold tracking-tight md:text-4xl">
-              Find the materials you need
+              Buy Bulk Scrap Directly
             </h2>
 
-            <p className="mt-2 max-w-2xl text-slate-500">
-              Buy recyclable materials directly from
-              verified kabadiwalas near your facility.
+            <p className="mt-2 max-w-2xl text-base text-slate-500">
+              Discover bulk scrap listed by
+              local Kabadiwalas and buy
+              directly through Scrap Saathi.
             </p>
 
           </div>
 
-          <div className="rounded-2xl border border-blue-100 bg-blue-50 px-5 py-3">
+          <div className="w-fit rounded-2xl border border-blue-200 bg-blue-50 px-6 py-4">
 
             <p className="text-xs font-bold text-blue-600">
-              YOUR FACILITY
+              MARKETPLACE
             </p>
 
-            <p className="mt-1 text-sm font-bold text-blue-900">
-              📍 Kolkata Industrial Area
+            <p className="mt-1 font-bold text-blue-900">
+              📍 Kolkata
             </p>
 
           </div>
 
         </div>
 
+        {/* ===================================================
+            INFO CARD
+        =================================================== */}
 
-        {/* ================= STATS ================= */}
+        <div className="mt-7 rounded-2xl border border-blue-200 bg-gradient-to-r from-blue-50 to-white p-6">
 
-        <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+
+            <div className="flex items-start gap-4">
+
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-blue-600 text-2xl text-white">
+                📦
+              </div>
+
+              <div>
+
+                <h3 className="text-lg font-bold text-blue-900">
+                  Bulk scrap from local Kabadiwalas
+                </h3>
+
+                <p className="mt-1 max-w-3xl text-sm leading-6 text-blue-700">
+                  Kabadiwalas can list the bulk
+                  scrap they have collected.
+                  Recycler companies can discover
+                  available material, compare
+                  listings and buy directly from
+                  the Kabadiwala.
+                </p>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </div>
+
+        {/* ===================================================
+            STATISTICS
+        =================================================== */}
+
+        <div className="mt-7 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
 
           <StatCard
             icon="📦"
-            title="Available Lots"
-            value={String(lots.length)}
-            subtitle="Near your facility"
+            title="Total Listings"
+            value={totalListings}
+            subtitle="All Kabadiwala listings"
           />
 
           <StatCard
-            icon="🔶"
-            title="Copper Available"
-            value="202 kg"
-            subtitle="Across 2 sellers"
+            icon="✓"
+            title="Available"
+            value={availableListings}
+            subtitle="Ready to purchase"
+            highlight={
+              availableListings > 0
+            }
+          />
+
+          <StatCard
+            icon="🏪"
+            title="Kabadiwalas"
+            value={totalKabadiwalas}
+            subtitle="Collection partners"
           />
 
           <StatCard
             icon="🤝"
-            title="Active Suppliers"
-            value="18"
-            subtitle="Verified partners"
-          />
-
-          <StatCard
-            icon="♻️"
-            title="This Month"
-            value="2.4 T"
-            subtitle="Materials purchased"
+            title="Purchased"
+            value={soldListings}
+            subtitle="Listings already sold"
           />
 
         </div>
 
+        {/* ===================================================
+            MARKETPLACE
+        =================================================== */}
 
-        {/* ================= TABS ================= */}
+        <section className="mt-10">
 
-        <div className="mt-8 flex gap-2 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-2">
+          <div className="mb-5">
 
-          <TabButton
-            active={activeTab === "marketplace"}
-            onClick={() => setActiveTab("marketplace")}
-            label="Material Marketplace"
-          />
+            <h3 className="text-2xl font-bold">
+              Bulk Scrap Marketplace
+            </h3>
 
-          <TabButton
-            active={activeTab === "requirements"}
-            onClick={() => setActiveTab("requirements")}
-            label="My Requirements"
-          />
+            <p className="mt-1 text-sm text-slate-500">
+              Browse bulk scrap currently
+              listed by Kabadiwalas.
+            </p>
 
-          <TabButton
-            active={activeTab === "purchases"}
-            onClick={() => setActiveTab("purchases")}
-            label="Purchase Requests"
-          />
+          </div>
 
-        </div>
+          {/* =================================================
+              FILTER BOX
+          ================================================= */}
 
+          <div className="rounded-2xl border border-slate-200 bg-white p-5">
 
-        {/* ================= MARKETPLACE ================= */}
+            <div className="grid gap-4 lg:grid-cols-[1fr_220px_220px_220px]">
 
-        {activeTab === "marketplace" && (
+              {/* SEARCH */}
 
-          <section className="mt-5">
+              <div className="relative">
 
-            {/* FILTER */}
-
-            <div className="flex flex-col justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 md:flex-row md:items-center">
-
-              <div>
-
-                <h3 className="font-bold">
-                  Available Materials
-                </h3>
-
-                <p className="mt-1 text-xs text-slate-400">
-                  Fresh listings from kabadiwala partners
-                </p>
-
-              </div>
-
-              <div className="flex gap-2 overflow-x-auto">
-
-                {materials.map((material) => (
-
-                  <button
-                    key={material}
-                    type="button"
-                    onClick={() =>
-                      setSelectedMaterial(material)
-                    }
-                    className={`whitespace-nowrap rounded-xl px-4 py-2 text-xs font-semibold ${
-                      selectedMaterial === material
-                        ? "bg-blue-600 text-white"
-                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                    }`}
-                  >
-                    {material}
-                  </button>
-
-                ))}
-
-              </div>
-
-            </div>
-
-
-            {/* MATERIAL CARDS */}
-
-            <div className="mt-5 grid gap-4 lg:grid-cols-2">
-
-              {filteredLots.map((lot) => (
-
-                <MaterialCard
-                  key={lot.id}
-                  lot={lot}
-                  onPurchase={() =>
-                    requestPurchase(lot.id)
-                  }
-                  onViewDetails={() =>
-                    setSelectedLot(lot)
-                  }
-                />
-
-              ))}
-
-            </div>
-
-
-            {filteredLots.length === 0 && (
-
-              <div className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-white p-12 text-center">
-
-                <div className="text-4xl">
-                  📦
-                </div>
-
-                <h3 className="mt-3 font-bold">
-                  No materials found
-                </h3>
-
-                <p className="mt-1 text-sm text-slate-500">
-                  Try another material category.
-                </p>
-
-              </div>
-
-            )}
-
-          </section>
-
-        )}
-
-
-        {/* ================= REQUIREMENTS ================= */}
-
-        {activeTab === "requirements" && (
-          <Requirements />
-        )}
-
-
-        {/* ================= PURCHASES ================= */}
-
-        {activeTab === "purchases" && (
-          <Purchases lots={lots} />
-        )}
-
-      </div>
-
-
-      {/* ================= DETAILS MODAL ================= */}
-
-      {selectedLot && (
-
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-5"
-          onClick={() => setSelectedLot(null)}
-        >
-
-          <div
-            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl"
-            onClick={(event) =>
-              event.stopPropagation()
-            }
-          >
-
-            {/* MODAL HEADER */}
-
-            <div className="flex items-start justify-between">
-
-              <div className="flex items-center gap-4">
-
-                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-slate-100 text-3xl">
-                  {selectedLot.icon}
-                </div>
-
-                <div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-
-                    <h2 className="text-2xl font-bold">
-                      {selectedLot.material}
-                    </h2>
-
-                    {selectedLot.verified && (
-
-                      <span className="rounded-full bg-blue-50 px-2 py-1 text-[9px] font-bold text-blue-700">
-                        ✓ VERIFIED
-                      </span>
-
-                    )}
-
-                  </div>
-
-                  <p className="mt-1 text-sm text-slate-400">
-                    Posted {selectedLot.posted}
-                  </p>
-
-                </div>
-
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setSelectedLot(null)}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200"
-              >
-                ✕
-              </button>
-
-            </div>
-
-
-            {/* PRICE */}
-
-            <div className="mt-6 rounded-2xl bg-blue-50 p-5">
-
-              <p className="text-xs font-bold uppercase tracking-wide text-blue-600">
-                Asking Price
-              </p>
-
-              <div className="mt-1 flex items-end justify-between gap-3">
-
-                <div>
-
-                  <span className="text-3xl font-bold text-blue-700">
-                    {selectedLot.price}
-                  </span>
-
-                  <span className="ml-1 text-sm text-blue-500">
-                    / kg
-                  </span>
-
-                </div>
-
-                <div className="text-right">
-
-                  <p className="text-xs text-blue-500">
-                    Total Value
-                  </p>
-
-                  <p className="font-bold text-blue-700">
-                    {selectedLot.total}
-                  </p>
-
-                </div>
-
-              </div>
-
-            </div>
-
-
-            {/* DETAILS */}
-
-            <div className="mt-5 grid grid-cols-2 gap-3">
-
-              <DetailBox
-                label="Quantity"
-                value={selectedLot.quantity}
-              />
-
-              <DetailBox
-                label="Condition"
-                value={selectedLot.condition}
-              />
-
-              <DetailBox
-                label="Location"
-                value={selectedLot.location}
-              />
-
-              <DetailBox
-                label="Distance"
-                value={selectedLot.distance}
-              />
-
-            </div>
-
-
-            {/* SELLER */}
-
-            <div className="mt-5 rounded-2xl border border-slate-200 p-4">
-
-              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                Seller
-              </p>
-
-              <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-
-                <div>
-
-                  <p className="font-bold">
-                    {selectedLot.seller}
-                  </p>
-
-                  <p className="mt-1 text-xs text-slate-500">
-                    📍 {selectedLot.location}
-                  </p>
-
-                </div>
-
-                <span className="w-fit rounded-full bg-green-50 px-3 py-1.5 text-[10px] font-bold text-green-700">
-                  ✓ VERIFIED
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
+                  🔎
                 </span>
 
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(event) =>
+                    setSearch(
+                      event.target.value
+                    )
+                  }
+                  placeholder="Search material, Kabadiwala, location..."
+                  className="w-full rounded-xl border border-slate-200 py-3 pl-11 pr-4 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+
+              </div>
+
+              {/* MATERIAL */}
+
+              <select
+                value={
+                  materialFilter
+                }
+                onChange={(event) =>
+                  setMaterialFilter(
+                    event.target
+                      .value as FilterMaterial
+                  )
+                }
+                className="rounded-xl border border-slate-200 bg-white px-4 py-3 outline-none focus:border-blue-500"
+              >
+
+                <option>
+                  All Materials
+                </option>
+
+                <option>
+                  Paper
+                </option>
+
+                <option>
+                  Plastic
+                </option>
+
+                <option>
+                  Iron
+                </option>
+
+                <option>
+                  Copper
+                </option>
+
+                <option>
+                  Aluminium
+                </option>
+
+                <option>
+                  E-Waste
+                </option>
+
+                <option>
+                  Glass
+                </option>
+
+                <option>
+                  Cardboard
+                </option>
+
+                <option>
+                  Mixed Scrap
+                </option>
+
+                <option>
+                  Other
+                </option>
+
+              </select>
+
+              {/* LOCATION */}
+
+              <select
+                value={
+                  locationFilter
+                }
+                onChange={(event) =>
+                  setLocationFilter(
+                    event.target.value
+                  )
+                }
+                className="rounded-xl border border-slate-200 bg-white px-4 py-3 outline-none focus:border-blue-500"
+              >
+
+                <option>
+                  All Locations
+                </option>
+
+                {locations.map(
+                  (location) => (
+                    <option
+                      key={location}
+                      value={location}
+                    >
+                      {location}
+                    </option>
+                  )
+                )}
+
+              </select>
+
+              {/* SORT */}
+
+              <select
+                value={sortBy}
+                onChange={(event) =>
+                  setSortBy(
+                    event.target
+                      .value as SortOption
+                  )
+                }
+                className="rounded-xl border border-slate-200 bg-white px-4 py-3 outline-none focus:border-blue-500"
+              >
+
+                <option>
+                  Newest
+                </option>
+
+                <option>
+                  Price Low to High
+                </option>
+
+                <option>
+                  Price High to Low
+                </option>
+
+              </select>
+
+            </div>
+
+            {/* FILTER FOOTER */}
+
+            <div className="mt-4 flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
+
+              <p className="text-sm text-slate-500">
+
+                <span className="font-bold text-slate-900">
+                  {visibleListings.length}
+                </span>{" "}
+
+                listing
+                {visibleListings.length !==
+                1
+                  ? "s"
+                  : ""}{" "}
+
+                found
+
+              </p>
+
+              <div className="flex flex-wrap gap-3">
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setShowBought(
+                      !showBought
+                    )
+                  }
+                  className={`rounded-xl px-4 py-2.5 text-sm font-bold transition ${
+                    showBought
+                      ? "bg-blue-600 text-white"
+                      : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                  }`}
+                >
+
+                  {showBought
+                    ? "Showing All"
+                    : "Available Only"}
+
+                </button>
+
+                <button
+                  type="button"
+                  onClick={
+                    resetFilters
+                  }
+                  className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold hover:bg-slate-50"
+                >
+                  Reset Filters
+                </button>
+
               </div>
 
             </div>
 
+          </div>
 
-            {/* ACTION BUTTONS */}
+          {/* =================================================
+              LISTINGS
+          ================================================= */}
 
-            <div className="mt-6 flex gap-3">
+          <div className="mt-6">
 
-              <button
-                type="button"
-                onClick={() => setSelectedLot(null)}
-                className="flex-1 rounded-xl border border-slate-200 px-4 py-3 text-sm font-bold hover:bg-slate-50"
-              >
-                Close
-              </button>
-
-              <button
-                type="button"
-                disabled={
-                  selectedLot.status === "Requested"
+            {visibleListings.length ===
+            0 ? (
+              <EmptyMarketplace
+                hasListings={
+                  listings.length > 0
                 }
-                onClick={() => {
+                onReset={
+                  resetFilters
+                }
+              />
+            ) : (
+              <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
 
-                  requestPurchase(
-                    selectedLot.id
-                  );
+                {visibleListings.map(
+                  (listing) => (
+                    <RecyclerListingCard
+                      key={
+                        listing.id
+                      }
+                      listing={
+                        listing
+                      }
+                      onView={() =>
+                        setSelectedListing(
+                          listing
+                        )
+                      }
+                    />
+                  )
+                )}
 
-                  setSelectedLot(null);
+              </div>
+            )}
 
-                }}
-                className={`flex-[1.5] rounded-xl px-4 py-3 text-sm font-bold text-white ${
-                  selectedLot.status === "Requested"
-                    ? "cursor-not-allowed bg-slate-300"
-                    : "bg-blue-600 hover:bg-blue-700"
-                }`}
-              >
+          </div>
 
-                {selectedLot.status === "Requested"
-                  ? "✓ Request Sent"
-                  : "Buy / Request Lot"}
+        </section>
 
-              </button>
+        {/* ===================================================
+            HOW IT WORKS
+        =================================================== */}
+
+        <section className="mt-10 rounded-2xl border border-slate-200 bg-white p-6">
+
+          <div className="mb-6">
+
+            <p className="text-xs font-bold tracking-wide text-blue-600">
+              SIMPLE MARKETPLACE
+            </p>
+
+            <h3 className="mt-1 text-xl font-bold">
+              How Scrap Saathi works
+            </h3>
+
+          </div>
+
+          <div className="grid gap-5 md:grid-cols-3">
+
+            <StepCard
+              number="1"
+              icon="📦"
+              title="Kabadiwala lists scrap"
+              description="The Kabadiwala lists accumulated bulk scrap with material, quantity, price and location."
+            />
+
+            <StepCard
+              number="2"
+              icon="🔎"
+              title="Recycler discovers"
+              description="Recycler companies search and filter available bulk scrap from local Kabadiwalas."
+            />
+
+            <StepCard
+              number="3"
+              icon="🤝"
+              title="Buy directly"
+              description="The Recycler selects an available listing and purchases the bulk scrap directly from the Kabadiwala."
+            />
+
+          </div>
+
+        </section>
+
+        {/* ===================================================
+            FOOTER NOTE
+        =================================================== */}
+
+        <div className="mt-8 rounded-2xl border border-blue-100 bg-blue-50 p-5">
+
+          <div className="flex items-start gap-3">
+
+            <span className="text-xl">
+              ℹ️
+            </span>
+
+            <div>
+
+              <p className="font-bold text-blue-900">
+                Recycler Marketplace
+              </p>
+
+              <p className="mt-1 text-sm leading-6 text-blue-700">
+                This marketplace contains bulk
+                scrap listings created by
+                Kabadiwalas. Customer pickup
+                requests are completely separate
+                and are not shown here.
+              </p>
 
             </div>
 
@@ -653,549 +1398,843 @@ export default function RecyclerPage() {
 
         </div>
 
+      </div>
+
+      {/* =====================================================
+          LOGOUT
+      ===================================================== */}
+
+      <button
+        type="button"
+        onClick={
+          handleLogout
+        }
+        className="fixed bottom-5 left-5 z-50 flex items-center gap-2 rounded-xl border border-red-200 bg-white px-5 py-3 text-sm font-bold text-red-600 shadow-lg transition hover:bg-red-50"
+      >
+        🚪 Logout
+      </button>
+
+      {/* =====================================================
+          DETAIL MODAL
+      ===================================================== */}
+
+      {selectedListing && (
+        <RecyclerListingModal
+          listing={
+            selectedListing
+          }
+          onClose={() =>
+            setSelectedListing(
+              null
+            )
+          }
+          onBuy={() =>
+            buyListing(
+              selectedListing.id
+            )
+          }
+        />
       )}
 
     </main>
   );
 }
 
-
-/* =====================================================
-   MATERIAL CARD
-===================================================== */
-
-function MaterialCard({
-  lot,
-  onPurchase,
-  onViewDetails,
-}: {
-  lot: MaterialLot;
-  onPurchase: () => void;
-  onViewDetails: () => void;
-}) {
-
-  return (
-
-    <div className="rounded-2xl border border-slate-200 bg-white p-5 transition hover:border-blue-300 hover:shadow-md">
-
-      {/* TOP */}
-
-      <div className="flex gap-4">
-
-        <div className="flex h-24 w-24 shrink-0 items-center justify-center rounded-2xl bg-slate-100 text-4xl">
-          {lot.icon}
-        </div>
-
-
-        <div className="min-w-0 flex-1">
-
-          <div className="flex items-start justify-between gap-2">
-
-            <div>
-
-              <div className="flex flex-wrap items-center gap-2">
-
-                <h3 className="font-bold">
-                  {lot.material}
-                </h3>
-
-                {lot.verified && (
-
-                  <span className="rounded-full bg-blue-50 px-2 py-1 text-[9px] font-bold text-blue-700">
-                    ✓ VERIFIED
-                  </span>
-
-                )}
-
-              </div>
-
-              <p className="mt-1 text-xs text-slate-400">
-                Posted {lot.posted}
-              </p>
-
-            </div>
-
-
-            <span
-              className={`rounded-full px-2.5 py-1 text-[9px] font-bold ${
-                lot.status === "Available"
-                  ? "bg-green-50 text-green-700"
-                  : "bg-yellow-50 text-yellow-700"
-              }`}
-            >
-              {lot.status === "Available"
-                ? "AVAILABLE"
-                : "REQUESTED"}
-            </span>
-
-          </div>
-
-
-          <div className="mt-3 grid grid-cols-2 gap-2">
-
-            <div>
-
-              <p className="text-[9px] font-bold uppercase text-slate-400">
-                Quantity
-              </p>
-
-              <p className="mt-1 text-sm font-bold">
-                {lot.quantity}
-              </p>
-
-            </div>
-
-
-            <div>
-
-              <p className="text-[9px] font-bold uppercase text-slate-400">
-                Condition
-              </p>
-
-              <p className="mt-1 text-sm font-semibold">
-                {lot.condition}
-              </p>
-
-            </div>
-
-          </div>
-
-        </div>
-
-      </div>
-
-
-      {/* SELLER */}
-
-      <div className="mt-5 rounded-xl bg-slate-50 p-4">
-
-        <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-
-          <div>
-
-            <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400">
-              SELLER
-            </p>
-
-            <p className="mt-1 text-sm font-bold">
-              {lot.seller}
-            </p>
-
-            <p className="mt-1 text-xs text-slate-500">
-              📍 {lot.location} • {lot.distance}
-            </p>
-
-          </div>
-
-
-          <div className="text-left sm:text-right">
-
-            <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400">
-              ASKING PRICE
-            </p>
-
-            <p className="mt-1 text-xl font-bold text-blue-700">
-              {lot.price}
-              <span className="ml-1 text-xs font-normal">
-                /kg
-              </span>
-            </p>
-
-            <p className="text-xs text-slate-400">
-              Total: {lot.total}
-            </p>
-
-          </div>
-
-        </div>
-
-      </div>
-
-
-      {/* BUTTONS */}
-
-      <div className="mt-4 flex gap-3">
-
-        {/* VIEW DETAILS */}
-
-        <button
-          type="button"
-          onClick={onViewDetails}
-          className="flex-1 rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold hover:bg-slate-50"
-        >
-          View Details
-        </button>
-
-
-        {/* BUY */}
-
-        <button
-          type="button"
-          onClick={onPurchase}
-          disabled={lot.status === "Requested"}
-          className={`flex-[1.5] rounded-xl px-4 py-3 text-sm font-bold text-white ${
-            lot.status === "Requested"
-              ? "cursor-not-allowed bg-slate-300"
-              : "bg-blue-600 hover:bg-blue-700"
-          }`}
-        >
-          {lot.status === "Requested"
-            ? "✓ Request Sent"
-            : "Buy / Request Lot"}
-        </button>
-
-      </div>
-
-    </div>
-  );
-}
-
-
-/* =====================================================
-   REQUIREMENTS
-===================================================== */
-
-function Requirements() {
-
-  const requirements = [
-    {
-      material: "Copper",
-      icon: "🔶",
-      needed: "500 kg",
-      current: "202 kg",
-      deadline: "15 Sep 2026",
-      priority: "High",
-    },
-    {
-      material: "E-Waste",
-      icon: "💻",
-      needed: "200 kg",
-      current: "45 kg",
-      deadline: "20 Sep 2026",
-      priority: "High",
-    },
-    {
-      material: "Aluminium",
-      icon: "🥫",
-      needed: "300 kg",
-      current: "95 kg",
-      deadline: "30 Sep 2026",
-      priority: "Medium",
-    },
-  ];
-
-  return (
-
-    <section className="mt-5">
-
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-
-        <div>
-
-          <h3 className="text-xl font-bold">
-            Material Requirements
-          </h3>
-
-          <p className="mt-1 text-sm text-slate-500">
-            Tell kabadiwalas what materials your company needs.
-          </p>
-
-        </div>
-
-
-        <button
-          type="button"
-          className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white hover:bg-blue-700"
-        >
-          + Add Requirement
-        </button>
-
-      </div>
-
-
-      <div className="mt-5 space-y-4">
-
-        {requirements.map((item) => (
-
-          <div
-            key={item.material}
-            className="rounded-2xl border border-slate-200 bg-white p-5"
-          >
-
-            <div className="flex flex-col gap-5 md:flex-row md:items-center">
-
-              <div className="flex flex-1 items-center gap-4">
-
-                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-50 text-2xl">
-                  {item.icon}
-                </div>
-
-                <div>
-
-                  <div className="flex items-center gap-2">
-
-                    <h4 className="font-bold">
-                      {item.material}
-                    </h4>
-
-                    <span
-                      className={`rounded-full px-2 py-1 text-[9px] font-bold ${
-                        item.priority === "High"
-                          ? "bg-red-50 text-red-600"
-                          : "bg-yellow-50 text-yellow-700"
-                      }`}
-                    >
-                      {item.priority} Priority
-                    </span>
-
-                  </div>
-
-                  <p className="mt-1 text-xs text-slate-500">
-                    Need by {item.deadline}
-                  </p>
-
-                </div>
-
-              </div>
-
-
-              <div>
-
-                <p className="text-xs text-slate-400">
-                  REQUIRED
-                </p>
-
-                <p className="font-bold">
-                  {item.needed}
-                </p>
-
-              </div>
-
-
-              <div>
-
-                <p className="text-xs text-slate-400">
-                  AVAILABLE
-                </p>
-
-                <p className="font-bold text-green-600">
-                  {item.current}
-                </p>
-
-              </div>
-
-
-              <button
-                type="button"
-                className="rounded-xl border border-blue-200 px-4 py-2.5 text-sm font-semibold text-blue-600 hover:bg-blue-50"
-              >
-                Edit
-              </button>
-
-            </div>
-
-          </div>
-
-        ))}
-
-      </div>
-
-    </section>
-  );
-}
-
-
-/* =====================================================
-   PURCHASES
-===================================================== */
-
-function Purchases({
-  lots,
-}: {
-  lots: MaterialLot[];
-}) {
-
-  const requested = lots.filter(
-    (lot) => lot.status === "Requested"
-  );
-
-  return (
-
-    <section className="mt-5">
-
-      <h3 className="text-xl font-bold">
-        Purchase Requests
-      </h3>
-
-      <p className="mt-1 text-sm text-slate-500">
-        Track material requests sent to kabadiwala partners.
-      </p>
-
-
-      <div className="mt-5 space-y-4">
-
-        {requested.length === 0 ? (
-
-          <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-12 text-center">
-
-            <div className="text-4xl">
-              🤝
-            </div>
-
-            <h3 className="mt-3 font-bold">
-              No active purchase requests
-            </h3>
-
-            <p className="mt-1 text-sm text-slate-500">
-              Your requested material lots will appear here.
-            </p>
-
-          </div>
-
-        ) : (
-
-          requested.map((lot) => (
-
-            <div
-              key={lot.id}
-              className="rounded-2xl border border-yellow-200 bg-white p-5"
-            >
-
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-
-                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-yellow-50 text-2xl">
-                  {lot.icon}
-                </div>
-
-                <div className="flex-1">
-
-                  <h4 className="font-bold">
-                    {lot.material} • {lot.quantity}
-                  </h4>
-
-                  <p className="mt-1 text-xs text-slate-500">
-                    Seller: {lot.seller}
-                  </p>
-
-                </div>
-
-                <span className="w-fit rounded-full bg-yellow-50 px-3 py-1.5 text-xs font-bold text-yellow-700">
-                  ⏳ Awaiting Response
-                </span>
-
-              </div>
-
-            </div>
-
-          ))
-
-        )}
-
-      </div>
-
-    </section>
-  );
-}
-
-
-/* =====================================================
+/* =========================================================
    STAT CARD
-===================================================== */
+========================================================= */
 
 function StatCard({
   icon,
   title,
   value,
   subtitle,
+  highlight = false,
 }: {
   icon: string;
   title: string;
-  value: string;
+  value: number;
   subtitle: string;
+  highlight?: boolean;
 }) {
-
   return (
+    <div
+      className={`rounded-2xl border bg-white p-5 shadow-sm ${
+        highlight && value > 0
+          ? "border-blue-300"
+          : "border-slate-200"
+      }`}
+    >
 
-    <div className="rounded-2xl border border-slate-200 bg-white p-5">
+      <div className="flex items-start justify-between">
 
-      <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-50 text-xl">
-        {icon}
+        <div>
+
+          <p className="text-sm text-slate-500">
+            {title}
+          </p>
+
+          <p className="mt-3 text-3xl font-bold">
+            {value}
+          </p>
+
+          <p className="mt-1 text-xs text-slate-400">
+            {subtitle}
+          </p>
+
+        </div>
+
+        <div
+          className={`flex h-11 w-11 items-center justify-center rounded-xl text-xl ${
+            highlight &&
+            value > 0
+              ? "bg-blue-100"
+              : "bg-slate-50"
+          }`}
+        >
+          {icon}
+        </div>
+
       </div>
-
-      <p className="mt-4 text-2xl font-bold">
-        {value}
-      </p>
-
-      <p className="mt-1 text-sm font-semibold">
-        {title}
-      </p>
-
-      <p className="mt-1 text-xs text-slate-400">
-        {subtitle}
-      </p>
 
     </div>
   );
 }
 
+/* =========================================================
+   LISTING CARD
+========================================================= */
 
-/* =====================================================
-   TAB BUTTON
-===================================================== */
-
-function TabButton({
-  active,
-  onClick,
-  label,
+function RecyclerListingCard({
+  listing,
+  onView,
 }: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
+  listing: ScrapListing;
+  onView: () => void;
 }) {
+  const isAvailable =
+    listing.status ===
+    "Available";
 
   return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
 
-    <button
-      type="button"
-      onClick={onClick}
-      className={`whitespace-nowrap rounded-xl px-4 py-3 text-sm font-semibold transition ${
-        active
-          ? "bg-blue-600 text-white"
-          : "text-slate-500 hover:bg-slate-100"
-      }`}
-    >
-      {label}
-    </button>
+      {/* TOP */}
 
+      <div className="flex items-start justify-between gap-3">
+
+        <div className="flex items-center gap-3">
+
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-50 text-2xl">
+            📦
+          </div>
+
+          <div>
+
+            <h4 className="font-bold">
+              {listing.material}
+            </h4>
+
+            <p className="text-xs text-slate-500">
+              {listing.id}
+            </p>
+
+          </div>
+
+        </div>
+
+        <span
+          className={`rounded-full px-3 py-1 text-[10px] font-bold ${
+            isAvailable
+              ? "bg-blue-50 text-blue-700"
+              : listing.status ===
+                  "Sold"
+                ? "bg-slate-100 text-slate-600"
+                : "bg-orange-50 text-orange-700"
+          }`}
+        >
+          {listing.status}
+        </span>
+
+      </div>
+
+      {/* KABADIWALA */}
+
+      <div className="mt-4 rounded-xl bg-blue-50 p-3">
+
+        <p className="text-[10px] font-bold uppercase tracking-wide text-blue-500">
+          LISTED BY
+        </p>
+
+        <p className="mt-1 font-bold text-blue-900">
+          🏪 {listing.kabadiwalaName}
+        </p>
+
+      </div>
+
+      {/* DETAILS */}
+
+      <div className="mt-4 space-y-3">
+
+        <div className="flex justify-between rounded-xl bg-slate-50 p-3">
+
+          <span className="text-sm text-slate-500">
+            Quantity
+          </span>
+
+          <span className="text-right text-sm font-bold">
+            {listing.quantity}
+          </span>
+
+        </div>
+
+        <div className="flex justify-between rounded-xl bg-slate-50 p-3">
+
+          <span className="text-sm text-slate-500">
+            Expected Price
+          </span>
+
+          <span className="text-right text-sm font-bold text-blue-700">
+            {listing.price}
+          </span>
+
+        </div>
+
+        <div className="flex justify-between rounded-xl bg-slate-50 p-3">
+
+          <span className="text-sm text-slate-500">
+            Location
+          </span>
+
+          <span className="max-w-[55%] text-right text-sm font-bold">
+            📍 {listing.location}
+          </span>
+
+        </div>
+
+      </div>
+
+      {/* DESCRIPTION */}
+
+      {listing.description && (
+        <p className="mt-4 line-clamp-2 text-sm leading-5 text-slate-500">
+          {listing.description}
+        </p>
+      )}
+
+      {/* IMAGE */}
+
+      {listing.imageUrl && (
+        <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+
+          <img
+            src={listing.imageUrl}
+            alt={listing.material}
+            className="h-40 w-full object-cover"
+          />
+
+        </div>
+      )}
+
+      {/* VIEW */}
+
+      <button
+        type="button"
+        onClick={onView}
+        className="mt-5 w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-bold text-white transition hover:bg-blue-700"
+      >
+        View Listing
+      </button>
+
+    </div>
   );
 }
 
+/* =========================================================
+   DETAIL MODAL
+========================================================= */
 
-/* =====================================================
-   DETAIL BOX
-===================================================== */
+function RecyclerListingModal({
+  listing,
+  onClose,
+  onBuy,
+}: {
+  listing: ScrapListing;
+  onClose: () => void;
+  onBuy: () => void;
+}) {
+  const isAvailable =
+    listing.status ===
+    "Available";
 
-function DetailBox({
+  return (
+    <div
+      className="fixed inset-0 z-[250] flex items-center justify-center bg-slate-900/60 p-5"
+      onClick={onClose}
+    >
+
+      <div
+        className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white shadow-2xl"
+        onClick={(event) =>
+          event.stopPropagation()
+        }
+      >
+
+        {/* HEADER */}
+
+        <div className="flex items-start justify-between border-b border-slate-100 p-6">
+
+          <div>
+
+            <p className="text-xs font-bold tracking-wide text-blue-600">
+              BULK SCRAP LISTING
+            </p>
+
+            <h2 className="mt-1 text-2xl font-bold">
+              {listing.material}
+            </h2>
+
+            <p className="mt-1 text-sm text-slate-500">
+              {listing.id}
+            </p>
+
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-xl hover:bg-slate-200"
+          >
+            ×
+          </button>
+
+        </div>
+
+        {/* CONTENT */}
+
+        <div className="space-y-5 p-6">
+
+          {/* STATUS */}
+
+          <div>
+
+            <span
+              className={`rounded-full px-3 py-1 text-xs font-bold ${
+                listing.status ===
+                "Available"
+                  ? "bg-blue-50 text-blue-700"
+                  : listing.status ===
+                      "Sold"
+                    ? "bg-slate-100 text-slate-600"
+                    : "bg-orange-50 text-orange-700"
+              }`}
+            >
+              {listing.status}
+            </span>
+
+          </div>
+
+          {/* MATERIAL */}
+
+          <div className="rounded-2xl bg-blue-50 p-5">
+
+            <p className="text-xs font-bold uppercase tracking-wide text-blue-600">
+              SCRAP MATERIAL
+            </p>
+
+            <p className="mt-2 text-2xl font-bold text-blue-900">
+              {listing.material}
+            </p>
+
+          </div>
+
+          {/* SELLER */}
+
+          <div className="rounded-2xl border border-blue-100 bg-blue-50 p-5">
+
+            <p className="text-xs font-bold uppercase tracking-wide text-blue-600">
+              KABADIWALA
+            </p>
+
+            <div className="mt-3 flex items-center gap-3">
+
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-600 font-bold text-white">
+                {getInitials(
+                  listing.kabadiwalaName
+                )}
+              </div>
+
+              <div>
+
+                <p className="font-bold text-blue-900">
+                  {listing.kabadiwalaName}
+                </p>
+
+                <p className="text-sm text-blue-700">
+                  Local Collection Partner
+                </p>
+
+              </div>
+
+            </div>
+
+          </div>
+
+          {/* DETAILS */}
+
+          <div className="grid gap-4 sm:grid-cols-2">
+
+            <ModalDetail
+              label="Quantity"
+              value={
+                listing.quantity
+              }
+            />
+
+            <ModalDetail
+              label="Expected Price"
+              value={
+                listing.price
+              }
+            />
+
+            <ModalDetail
+              label="Location"
+              value={
+                listing.location
+              }
+            />
+
+            <ModalDetail
+              label="Listing ID"
+              value={
+                listing.id
+              }
+            />
+
+          </div>
+
+          {/* DESCRIPTION */}
+
+          <div className="rounded-2xl border border-slate-200 p-5">
+
+            <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
+              DESCRIPTION
+            </p>
+
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              {listing.description ||
+                "No description provided."}
+            </p>
+
+          </div>
+
+          {/* IMAGE */}
+
+          {listing.imageUrl ? (
+            <div className="rounded-2xl border border-slate-200 p-5">
+
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
+                SCRAP IMAGE
+              </p>
+
+              <img
+                src={listing.imageUrl}
+                alt={listing.material}
+                className="mt-3 max-h-80 w-full rounded-xl object-cover"
+              />
+
+            </div>
+          ) : listing.imageName ? (
+            <div className="rounded-2xl border border-slate-200 p-5">
+
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
+                SCRAP IMAGE
+              </p>
+
+              <div className="mt-3 rounded-xl bg-slate-50 p-4">
+
+                <p className="text-sm font-semibold">
+                  📷 {listing.imageName}
+                </p>
+
+              </div>
+
+            </div>
+          ) : null}
+
+          {/* PURCHASE INFO */}
+
+          {isAvailable && (
+            <div className="rounded-2xl bg-blue-50 p-5">
+
+              <p className="font-bold text-blue-900">
+                🤝 Direct purchase
+              </p>
+
+              <p className="mt-1 text-sm leading-6 text-blue-700">
+                You are purchasing this bulk
+                scrap directly from the listed
+                Kabadiwala through Scrap Saathi.
+              </p>
+
+            </div>
+          )}
+
+          {/* ACTIONS */}
+
+          <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-bold hover:bg-slate-50"
+            >
+              Close
+            </button>
+
+            {isAvailable && (
+              <button
+                type="button"
+                onClick={onBuy}
+                className="rounded-xl bg-blue-600 px-6 py-3 text-sm font-bold text-white hover:bg-blue-700"
+              >
+                🤝 Buy This Scrap
+              </button>
+            )}
+
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   MODAL DETAIL
+========================================================= */
+
+function ModalDetail({
   label,
   value,
 }: {
   label: string;
   value: string;
 }) {
-
   return (
-
-    <div className="rounded-xl bg-slate-50 p-4">
+    <div className="rounded-2xl bg-slate-50 p-4">
 
       <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
         {label}
       </p>
 
-      <p className="mt-1 text-sm font-bold text-slate-800">
+      <p className="mt-2 font-bold">
         {value}
       </p>
 
     </div>
-
   );
+}
+
+/* =========================================================
+   EMPTY MARKETPLACE
+========================================================= */
+
+function EmptyMarketplace({
+  hasListings,
+  onReset,
+}: {
+  hasListings: boolean;
+  onReset: () => void;
+}) {
+  return (
+    <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-12 text-center">
+
+      <div className="text-6xl">
+        {hasListings
+          ? "🔎"
+          : "📦"}
+      </div>
+
+      <h3 className="mt-5 text-xl font-bold">
+
+        {hasListings
+          ? "No matching listings"
+          : "No bulk scrap listed yet"}
+
+      </h3>
+
+      <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">
+
+        {hasListings
+          ? "Try changing your search or filters to find available scrap."
+          : "When Kabadiwalas list bulk scrap, their available listings will appear here."}
+
+      </p>
+
+      {hasListings && (
+        <button
+          type="button"
+          onClick={onReset}
+          className="mt-6 rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white hover:bg-blue-700"
+        >
+          Clear Filters
+        </button>
+      )}
+
+    </div>
+  );
+}
+
+/* =========================================================
+   STEP CARD
+========================================================= */
+
+function StepCard({
+  number,
+  icon,
+  title,
+  description,
+}: {
+  number: string;
+  icon: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+
+      <div className="flex items-start gap-4">
+
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-600 font-bold text-white">
+          {number}
+        </div>
+
+        <div>
+
+          <div className="text-2xl">
+            {icon}
+          </div>
+
+          <h4 className="mt-2 font-bold">
+            {title}
+          </h4>
+
+          <p className="mt-1 text-sm leading-6 text-slate-500">
+            {description}
+          </p>
+
+        </div>
+
+      </div>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+/*
+  Get the first usable string.
+*/
+
+function firstString(
+  ...values: any[]
+): string {
+  for (const value of values) {
+    if (
+      value !== undefined &&
+      value !== null
+    ) {
+      const text =
+        String(value).trim();
+
+      if (text.length > 0) {
+        return text;
+      }
+    }
+  }
+
+  return "";
+}
+
+/*
+  Generate ID if Kabadiwala listing
+  doesn't have one.
+*/
+
+function generateListingId(): string {
+  return (
+    "SCRAP-" +
+    Date.now() +
+    "-" +
+    Math.random()
+      .toString(36)
+      .substring(2, 7)
+      .toUpperCase()
+  );
+}
+
+/*
+  Normalize status.
+*/
+
+function normalizeStatus(
+  value: string
+): ListingStatus {
+  const status =
+    value
+      .toLowerCase()
+      .trim();
+
+  if (
+    status === "sold" ||
+    status === "sold out" ||
+    status === "completed"
+  ) {
+    return "Sold";
+  }
+
+  if (
+    status === "reserved" ||
+    status === "booked"
+  ) {
+    return "Reserved";
+  }
+
+  /*
+    Empty status means available.
+
+    This is important because some
+    Kabadiwala listing forms may not
+    save status at all.
+  */
+
+  return "Available";
+}
+
+/*
+  Normalize material names so filters
+  work with slightly different names.
+*/
+
+function normalizeMaterial(
+  value: string
+): string {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[_-]/g, " ");
+}
+
+/*
+  Extract numeric price.
+
+  Examples:
+  ₹25,000
+  Rs 25000
+  25000
+  ₹25/kg
+*/
+
+function extractPrice(
+  value: string
+): number {
+  if (!value) {
+    return 0;
+  }
+
+  const cleaned =
+    value
+      .replace(/,/g, "")
+      .replace(/[^\d.]/g, "");
+
+  const number =
+    parseFloat(cleaned);
+
+  return Number.isNaN(number)
+    ? 0
+    : number;
+}
+
+/*
+  Remove duplicate listings.
+
+  This is necessary because the code checks
+  multiple possible LocalStorage keys.
+*/
+
+function removeDuplicateListings(
+  listings: ScrapListing[]
+): ScrapListing[] {
+  const map =
+    new Map<
+      string,
+      ScrapListing
+    >();
+
+  for (const listing of listings) {
+    const uniqueKey =
+      [
+        listing.id,
+        listing.material,
+        listing.quantity,
+        listing.price,
+        listing.location,
+        listing.kabadiwalaName,
+      ]
+        .join("|")
+        .toLowerCase();
+
+    if (
+      !map.has(uniqueKey)
+    ) {
+      map.set(
+        uniqueKey,
+        listing
+      );
+    }
+  }
+
+  return Array.from(
+    map.values()
+  );
+}
+
+/*
+  Get initials for Kabadiwala.
+*/
+
+function getInitials(
+  name: string
+): string {
+  if (!name) {
+    return "K";
+  }
+
+  const parts =
+    name
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+
+  if (
+    parts.length === 1
+  ) {
+    return parts[0]
+      .substring(0, 2)
+      .toUpperCase();
+  }
+
+  return (
+    parts[0][0] +
+    parts[
+      parts.length - 1
+    ][0]
+  ).toUpperCase();
 }

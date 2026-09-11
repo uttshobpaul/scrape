@@ -20,13 +20,27 @@ type Material = {
   description: string;
 };
 
-type Pickup = {
+type PickupStatus =
+  | "Pending"
+  | "Accepted"
+  | "Confirmed"
+  | "Completed"
+  | "Rejected";
+
+type PickupRequest = {
   id: string;
-  type: string;
+  customerName: string;
+  customerInitial: string;
+  requestType: "Sell Scrap" | "Pick & Dump";
+  material: string;
+  quantity: string;
+  location: string;
   date: string;
   time: string;
-  location: string;
-  status: "Confirmed" | "Pending" | "Completed";
+  imageName: string;
+  status: PickupStatus;
+  assignedKabadiwala: string | null;
+  createdAt: string;
 };
 
 type Transaction = {
@@ -36,6 +50,21 @@ type Transaction = {
   amount: string;
   date: string;
   status: "Completed" | "Pending";
+};
+
+/* =============================================================
+   STORAGE KEY
+   IMPORTANT:
+   Kabadiwala page will use this SAME key.
+============================================================= */
+
+const PICKUP_REQUESTS_KEY = "scrapsaathi_pickup_requests";
+
+// logout
+const handleLogout = () => {
+  localStorage.removeItem("scrapsaathi_user");
+
+  window.location.href = "/";
 };
 
 /* =============================================================
@@ -76,35 +105,8 @@ const materials: Material[] = [
 ];
 
 /* =============================================================
-   DEMO DATA
+   DEMO TRANSACTIONS
 ============================================================= */
-
-const demoPickups: Pickup[] = [
-  {
-    id: "#PK1024",
-    type: "Sell Scrap",
-    date: "12 September 2026",
-    time: "4:00 PM – 6:00 PM",
-    location: "Salt Lake, Kolkata",
-    status: "Confirmed",
-  },
-  {
-    id: "#PK1023",
-    type: "Pick & Dump",
-    date: "10 September 2026",
-    time: "7:30 PM",
-    location: "Salt Lake, Kolkata",
-    status: "Pending",
-  },
-  {
-    id: "#PK1019",
-    type: "Sell Scrap",
-    date: "5 September 2026",
-    time: "11:00 AM – 1:00 PM",
-    location: "Salt Lake, Kolkata",
-    status: "Completed",
-  },
-];
 
 const demoTransactions: Transaction[] = [
   {
@@ -152,12 +154,10 @@ export default function CustomerPage() {
 
   const [imageName, setImageName] = useState("");
 
-  /* DATE */
   const [pickupDate, setPickupDate] = useState(
     getTodayDate()
   );
 
-  /* TIME */
   const [pickupTime, setPickupTime] = useState("18:00");
 
   /* =========================================================
@@ -169,7 +169,7 @@ export default function CustomerPage() {
 
     setTimeout(() => {
       setMessage("");
-    }, 3000);
+    }, 3500);
   };
 
   /* =========================================================
@@ -225,6 +225,83 @@ export default function CustomerPage() {
   };
 
   /* =========================================================
+     SAVE PICKUP REQUEST
+     
+     THIS IS THE CONNECTION BETWEEN CUSTOMER
+     AND KABADIWALA FOR THE PROTOTYPE.
+  ========================================================= */
+
+  const createPickupRequest = (
+    requestType: "Sell Scrap" | "Pick & Dump"
+  ) => {
+    const request: PickupRequest = {
+      id: `#PK${Date.now().toString().slice(-6)}`,
+
+      customerName: "Uttshob",
+
+      customerInitial: "U",
+
+      requestType,
+
+      material:
+        requestType === "Sell Scrap"
+          ? selectedMaterial
+          : "Mixed Waste",
+
+      quantity: quantity
+        ? `${quantity} kg`
+        : "Not specified",
+
+      location,
+
+      date: formatDate(pickupDate),
+
+      time: formatTime(pickupTime),
+
+      imageName: imageName || "",
+
+      status: "Pending",
+
+      assignedKabadiwala: null,
+
+      createdAt: new Date().toISOString(),
+    };
+
+    /* Get old requests */
+
+    let existingRequests: PickupRequest[] = [];
+
+    try {
+      const stored =
+        localStorage.getItem(
+          PICKUP_REQUESTS_KEY
+        );
+
+      if (stored) {
+        existingRequests = JSON.parse(stored);
+      }
+    } catch {
+      existingRequests = [];
+    }
+
+    /* Add newest request at beginning */
+
+    const updatedRequests = [
+      request,
+      ...existingRequests,
+    ];
+
+    /* Save */
+
+    localStorage.setItem(
+      PICKUP_REQUESTS_KEY,
+      JSON.stringify(updatedRequests)
+    );
+
+    return request;
+  };
+
+  /* =========================================================
      SELL SUBMIT
   ========================================================= */
 
@@ -253,9 +330,25 @@ export default function CustomerPage() {
       return;
     }
 
-    showMessage(
-      "Scrap pickup request created successfully!"
+    /* CREATE REQUEST */
+
+    const request =
+      createPickupRequest("Sell Scrap");
+
+    console.log(
+      "New Kabadiwala pickup request:",
+      request
     );
+
+    showMessage(
+      `Pickup ${request.id} created! Nearby Kabadiwalas can now see your request.`
+    );
+
+    /* Go to pickup page */
+
+    setTimeout(() => {
+      goTo("pickups");
+    }, 800);
   };
 
   /* =========================================================
@@ -280,9 +373,23 @@ export default function CustomerPage() {
       return;
     }
 
-    showMessage(
-      "Quick waste pickup requested! A collection partner will be assigned."
+    /* CREATE REQUEST */
+
+    const request =
+      createPickupRequest("Pick & Dump");
+
+    console.log(
+      "New Kabadiwala pickup request:",
+      request
     );
+
+    showMessage(
+      `Pickup ${request.id} created! A collection partner can now see it.`
+    );
+
+    setTimeout(() => {
+      goTo("pickups");
+    }, 800);
   };
 
   /* =========================================================
@@ -366,7 +473,7 @@ export default function CustomerPage() {
 
 
       {/* =====================================================
-          TOAST MESSAGE
+          TOAST
       ===================================================== */}
 
       {message && (
@@ -398,60 +505,55 @@ export default function CustomerPage() {
 
             <nav className="mt-5 space-y-2">
 
-              {/* OVERVIEW */}
-
               <SidebarButton
                 active={view === "overview"}
                 icon="⌂"
                 label="Overview"
-                onClick={() => goTo("overview")}
+                onClick={() =>
+                  goTo("overview")
+                }
               />
-
-
-              {/* SELL */}
 
               <SidebarButton
                 active={view === "sell"}
                 icon="💰"
                 label="Sell Scrap"
-                onClick={() => goTo("sell")}
+                onClick={() =>
+                  goTo("sell")
+                }
               />
-
-
-              {/* PICK & DUMP */}
 
               <SidebarButton
                 active={view === "dump"}
                 icon="🚛"
                 label="Pick & Dump"
-                onClick={() => goTo("dump")}
+                onClick={() =>
+                  goTo("dump")
+                }
               />
-
-
-              {/* NEAREST KABADI */}
 
               <SidebarButton
                 active={view === "nearest"}
                 icon="📍"
                 label="Nearest Kabadiwala"
-                onClick={() => goTo("nearest")}
+                onClick={() =>
+                  goTo("nearest")
+                }
               />
-
-
-              {/* MY PICKUPS */}
 
               <SidebarButton
                 active={view === "pickups"}
                 icon="📅"
                 label="My Pickups"
-                onClick={() => goTo("pickups")}
+                onClick={() =>
+                  goTo("pickups")
+                }
               />
 
-
-              {/* TRANSACTIONS */}
-
               <SidebarButton
-                active={view === "transactions"}
+                active={
+                  view === "transactions"
+                }
                 icon="💳"
                 label="Transactions"
                 onClick={() =>
@@ -461,8 +563,6 @@ export default function CustomerPage() {
 
             </nav>
 
-
-            {/* SIDEBAR INFO */}
 
             <div className="mt-10 rounded-2xl bg-green-50 p-5">
 
@@ -475,8 +575,9 @@ export default function CustomerPage() {
               </h3>
 
               <p className="mt-2 text-sm leading-6 text-green-700">
-                Sell recyclable scrap or get unwanted
-                waste picked up from your doorstep.
+                Sell recyclable scrap or get
+                unwanted waste picked up from
+                your doorstep.
               </p>
 
             </div>
@@ -494,13 +595,16 @@ export default function CustomerPage() {
 
           <div className="px-5 py-8 md:px-8 lg:px-10">
 
-
             {/* OVERVIEW */}
 
             {view === "overview" && (
               <Overview
-                onSell={() => goTo("sell")}
-                onDump={() => goTo("dump")}
+                onSell={() =>
+                  goTo("sell")
+                }
+                onDump={() =>
+                  goTo("dump")
+                }
                 onNearest={() =>
                   goTo("nearest")
                 }
@@ -512,7 +616,9 @@ export default function CustomerPage() {
 
             {view === "sell" && (
               <SellScrap
-                selectedMaterial={selectedMaterial}
+                selectedMaterial={
+                  selectedMaterial
+                }
                 setSelectedMaterial={
                   setSelectedMaterial
                 }
@@ -528,9 +634,13 @@ export default function CustomerPage() {
                 handleImageChange={
                   handleImageChange
                 }
-                detectLocation={detectLocation}
+                detectLocation={
+                  detectLocation
+                }
                 onSubmit={submitSell}
-                onBack={() => goTo("overview")}
+                onBack={() =>
+                  goTo("overview")
+                }
               />
             )}
 
@@ -551,9 +661,13 @@ export default function CustomerPage() {
                 handleImageChange={
                   handleImageChange
                 }
-                detectLocation={detectLocation}
+                detectLocation={
+                  detectLocation
+                }
                 onSubmit={submitDump}
-                onBack={() => goTo("overview")}
+                onBack={() =>
+                  goTo("overview")
+                }
               />
             )}
 
@@ -564,9 +678,15 @@ export default function CustomerPage() {
               <NearestKabadi
                 location={location}
                 setLocation={setLocation}
-                detectLocation={detectLocation}
-                onBack={() => goTo("overview")}
-                onSell={() => goTo("sell")}
+                detectLocation={
+                  detectLocation
+                }
+                onBack={() =>
+                  goTo("overview")
+                }
+                onSell={() =>
+                  goTo("sell")
+                }
               />
             )}
 
@@ -575,7 +695,9 @@ export default function CustomerPage() {
 
             {view === "pickups" && (
               <MyPickups
-                onBack={() => goTo("overview")}
+                onBack={() =>
+                  goTo("overview")
+                }
               />
             )}
 
@@ -584,7 +706,9 @@ export default function CustomerPage() {
 
             {view === "transactions" && (
               <Transactions
-                onBack={() => goTo("overview")}
+                onBack={() =>
+                  goTo("overview")
+                }
               />
             )}
 
@@ -593,6 +717,15 @@ export default function CustomerPage() {
         </section>
 
       </div>
+      {/* LOGOUT BUTTON */}
+
+<button
+  type="button"
+  onClick={handleLogout}
+  className="fixed bottom-5 left-5 z-50 flex items-center gap-2 rounded-xl border border-red-200 bg-white px-5 py-3 text-sm font-bold text-red-600 shadow-lg transition hover:bg-red-50"
+>
+  🚪 Logout
+</button>
 
     </main>
   );
@@ -615,29 +748,19 @@ function Overview({
   return (
     <div>
 
-      {/* HEADER */}
+      <p className="text-sm font-bold tracking-wide text-green-600">
+        CUSTOMER DASHBOARD
+      </p>
 
-      <div>
+      <h2 className="mt-2 text-3xl font-bold tracking-tight md:text-4xl">
+        Manage your waste easily.
+      </h2>
 
-        <p className="text-sm font-bold tracking-wide text-green-600">
-          CUSTOMER DASHBOARD
-        </p>
+      <p className="mt-2 max-w-2xl text-base text-slate-500">
+        Sell your scrap or get unwanted waste
+        picked up from your doorstep.
+      </p>
 
-        <h2 className="mt-2 text-3xl font-bold tracking-tight md:text-4xl">
-          Manage your waste easily.
-        </h2>
-
-        <p className="mt-2 max-w-2xl text-base text-slate-500">
-          Sell your scrap or get unwanted waste picked
-          up from your doorstep.
-        </p>
-
-      </div>
-
-
-      {/* =====================================================
-          TWO MAIN ACTIONS
-      ===================================================== */}
 
       <div className="mt-9">
 
@@ -685,9 +808,10 @@ function Overview({
               </div>
 
               <p className="mt-3 max-w-lg text-sm leading-6 text-slate-500">
-                Sell paper, plastic, iron, copper,
-                aluminium, e-waste and other recyclable
-                materials to a nearby Kabadiwala.
+                Sell paper, plastic, iron,
+                copper, aluminium, e-waste
+                and other recyclable materials
+                to a nearby Kabadiwala.
               </p>
 
             </div>
@@ -746,9 +870,10 @@ function Overview({
               </div>
 
               <p className="mt-3 max-w-lg text-sm leading-6 text-slate-500">
-                Don't want to sell the waste? Request a
-                quick doorstep pickup and our collection
-                partner will take it for proper disposal.
+                Don't want to sell the waste?
+                Request a quick doorstep pickup
+                and our collection partner will
+                take it for proper disposal.
               </p>
 
             </div>
@@ -774,9 +899,7 @@ function Overview({
       </div>
 
 
-      {/* =====================================================
-          QUICK ACCESS
-      ===================================================== */}
+      {/* QUICK ACCESS */}
 
       <div className="mt-8 grid gap-5 md:grid-cols-2">
 
@@ -799,7 +922,8 @@ function Overview({
               </h3>
 
               <p className="mt-1 text-sm text-slate-500">
-                Find local collection partners near you.
+                Find local collection partners
+                near you.
               </p>
 
             </div>
@@ -820,8 +944,9 @@ function Overview({
           </h3>
 
           <p className="mt-2 text-sm leading-6 text-slate-500">
-            Sell your recyclable materials or request
-            doorstep waste collection.
+            Sell your recyclable materials
+            or request doorstep waste
+            collection.
           </p>
 
         </div>
@@ -855,21 +980,44 @@ function SellScrap({
   onBack,
 }: {
   selectedMaterial: string;
-  setSelectedMaterial: (value: string) => void;
+  setSelectedMaterial: (
+    value: string
+  ) => void;
+
   quantity: string;
-  setQuantity: (value: string) => void;
+
+  setQuantity: (
+    value: string
+  ) => void;
+
   location: string;
-  setLocation: (value: string) => void;
+
+  setLocation: (
+    value: string
+  ) => void;
+
   pickupDate: string;
-  setPickupDate: (value: string) => void;
+
+  setPickupDate: (
+    value: string
+  ) => void;
+
   pickupTime: string;
-  setPickupTime: (value: string) => void;
+
+  setPickupTime: (
+    value: string
+  ) => void;
+
   imageName: string;
+
   handleImageChange: (
     event: ChangeEvent<HTMLInputElement>
   ) => void;
+
   detectLocation: () => void;
+
   onSubmit: () => void;
+
   onBack: () => void;
 }) {
   return (
@@ -888,8 +1036,8 @@ function SellScrap({
         </h2>
 
         <p className="mt-2 text-slate-500">
-          Tell us what you have and we'll arrange a
-          pickup from your location.
+          Tell us what you have and we'll
+          arrange a pickup from your location.
         </p>
 
       </div>
@@ -902,11 +1050,10 @@ function SellScrap({
 
         <div className="rounded-3xl border border-slate-200 bg-white p-6">
 
-          {/* MATERIAL */}
-
           <label className="text-sm font-bold">
             Select Scrap Type
           </label>
+
 
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
 
@@ -916,10 +1063,13 @@ function SellScrap({
                 key={material.name}
                 type="button"
                 onClick={() =>
-                  setSelectedMaterial(material.name)
+                  setSelectedMaterial(
+                    material.name
+                  )
                 }
                 className={`rounded-2xl border p-4 text-left transition ${
-                  selectedMaterial === material.name
+                  selectedMaterial ===
+                  material.name
                     ? "border-green-500 bg-green-50"
                     : "border-slate-200 hover:border-green-300"
                 }`}
@@ -1006,7 +1156,9 @@ function SellScrap({
                 min="0"
                 value={quantity}
                 onChange={(e) =>
-                  setQuantity(e.target.value)
+                  setQuantity(
+                    e.target.value
+                  )
                 }
                 placeholder="Example: 10"
                 className="w-full rounded-l-xl border border-slate-200 px-4 py-3 outline-none focus:border-green-500"
@@ -1045,7 +1197,9 @@ function SellScrap({
               type="text"
               value={location}
               onChange={(e) =>
-                setLocation(e.target.value)
+                setLocation(
+                  e.target.value
+                )
               }
               placeholder="Enter pickup location"
               className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-green-500"
@@ -1054,9 +1208,7 @@ function SellScrap({
           </div>
 
 
-          {/* =================================================
-              CALENDAR
-          ================================================= */}
+          {/* DATE TIME */}
 
           <DateTimePicker
             date={pickupDate}
@@ -1097,7 +1249,9 @@ function SellScrap({
 
             <SummaryItem
               label="Material"
-              value={selectedMaterial}
+              value={
+                selectedMaterial
+              }
             />
 
             <SummaryItem
@@ -1116,12 +1270,16 @@ function SellScrap({
 
             <SummaryItem
               label="Pickup Date"
-              value={formatDate(pickupDate)}
+              value={formatDate(
+                pickupDate
+              )}
             />
 
             <SummaryItem
               label="Pickup Time"
-              value={formatTime(pickupTime)}
+              value={formatTime(
+                pickupTime
+              )}
             />
 
           </div>
@@ -1129,8 +1287,9 @@ function SellScrap({
           <div className="mt-6 rounded-xl bg-green-50 p-4">
 
             <p className="text-sm leading-6 text-green-800">
-              💡 Final price depends on the actual
-              material type, quality and weight.
+              💡 Your request will be sent
+              to the Kabadiwala collection
+              network.
             </p>
 
           </div>
@@ -1164,19 +1323,35 @@ function PickAndDump({
   onBack,
 }: {
   quantity: string;
-  setQuantity: (value: string) => void;
+  setQuantity: (
+    value: string
+  ) => void;
+
   location: string;
-  setLocation: (value: string) => void;
+  setLocation: (
+    value: string
+  ) => void;
+
   pickupDate: string;
-  setPickupDate: (value: string) => void;
+  setPickupDate: (
+    value: string
+  ) => void;
+
   pickupTime: string;
-  setPickupTime: (value: string) => void;
+  setPickupTime: (
+    value: string
+  ) => void;
+
   imageName: string;
+
   handleImageChange: (
     event: ChangeEvent<HTMLInputElement>
   ) => void;
+
   detectLocation: () => void;
+
   onSubmit: () => void;
+
   onBack: () => void;
 }) {
   return (
@@ -1203,9 +1378,9 @@ function PickAndDump({
         </h2>
 
         <p className="mt-2 max-w-2xl text-slate-500">
-          Don't want to sell your waste? Request a
-          quick doorstep collection and we'll take it
-          for proper disposal.
+          Don't want to sell your waste?
+          Request a quick doorstep collection
+          and we'll take it for proper disposal.
         </p>
 
       </div>
@@ -1236,9 +1411,10 @@ function PickAndDump({
                 </h3>
 
                 <p className="mt-1 text-sm leading-6 text-orange-800">
-                  Give us your location and waste
-                  details. We'll try to assign a nearby
-                  collection partner quickly.
+                  Give us your location and
+                  waste details. We'll try to
+                  assign a nearby collection
+                  partner quickly.
                 </p>
 
               </div>
@@ -1263,7 +1439,9 @@ function PickAndDump({
                 min="0"
                 value={quantity}
                 onChange={(e) =>
-                  setQuantity(e.target.value)
+                  setQuantity(
+                    e.target.value
+                  )
                 }
                 placeholder="Example: 5"
                 className="w-full rounded-l-xl border border-slate-200 px-4 py-3 outline-none focus:border-orange-500"
@@ -1303,8 +1481,9 @@ function PickAndDump({
                 </p>
 
                 <p className="mt-1 text-xs text-slate-400">
-                  Helps the collection partner understand
-                  the waste.
+                  Helps the collection
+                  partner understand the
+                  waste.
                 </p>
 
               </div>
@@ -1345,7 +1524,9 @@ function PickAndDump({
               type="text"
               value={location}
               onChange={(e) =>
-                setLocation(e.target.value)
+                setLocation(
+                  e.target.value
+                )
               }
               placeholder="Enter pickup location"
               className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-orange-500"
@@ -1354,7 +1535,7 @@ function PickAndDump({
           </div>
 
 
-          {/* CALENDAR */}
+          {/* DATE TIME */}
 
           <DateTimePicker
             date={pickupDate}
@@ -1414,12 +1595,16 @@ function PickAndDump({
 
             <SummaryItem
               label="Pickup Date"
-              value={formatDate(pickupDate)}
+              value={formatDate(
+                pickupDate
+              )}
             />
 
             <SummaryItem
               label="Pickup Time"
-              value={formatTime(pickupTime)}
+              value={formatTime(
+                pickupTime
+              )}
             />
 
           </div>
@@ -1427,9 +1612,9 @@ function PickAndDump({
           <div className="mt-6 rounded-xl bg-orange-50 p-4">
 
             <p className="text-sm leading-6 text-orange-800">
-              ⚡ We will try to assign the nearest
-              available collection partner for your
-              request.
+              ⚡ Your request will be
+              visible to the collection
+              partner network.
             </p>
 
           </div>
@@ -1456,10 +1641,19 @@ function DateTimePicker({
   title,
 }: {
   date: string;
-  setDate: (value: string) => void;
+
+  setDate: (
+    value: string
+  ) => void;
+
   time: string;
-  setTime: (value: string) => void;
+
+  setTime: (
+    value: string
+  ) => void;
+
   accent: "green" | "orange";
+
   title: string;
 }) {
   const borderColor =
@@ -1481,7 +1675,9 @@ function DateTimePicker({
           {title}
         </label>
 
-        <span className={`text-xs font-bold ${labelColor}`}>
+        <span
+          className={`text-xs font-bold ${labelColor}`}
+        >
           📅 Choose your own
         </span>
 
@@ -1506,7 +1702,9 @@ function DateTimePicker({
               value={date}
               min={getTodayDate()}
               onChange={(e) =>
-                setDate(e.target.value)
+                setDate(
+                  e.target.value
+                )
               }
               className={`w-full rounded-xl border border-slate-200 bg-white px-4 py-3 font-semibold outline-none ${borderColor}`}
             />
@@ -1534,7 +1732,9 @@ function DateTimePicker({
               type="time"
               value={time}
               onChange={(e) =>
-                setTime(e.target.value)
+                setTime(
+                  e.target.value
+                )
               }
               className={`w-full rounded-xl border border-slate-200 bg-white px-4 py-3 font-semibold outline-none ${borderColor}`}
             />
@@ -1550,8 +1750,6 @@ function DateTimePicker({
       </div>
 
 
-      {/* SELECTED PREVIEW */}
-
       <div className="mt-3 flex items-center gap-3 rounded-xl border border-slate-100 bg-white px-4 py-3">
 
         <span className="text-lg">
@@ -1565,7 +1763,8 @@ function DateTimePicker({
           </p>
 
           <p className="text-sm font-bold">
-            {formatDate(date)} at {formatTime(time)}
+            {formatDate(date)} at{" "}
+            {formatTime(time)}
           </p>
 
         </div>
@@ -1589,9 +1788,15 @@ function NearestKabadi({
   onSell,
 }: {
   location: string;
-  setLocation: (value: string) => void;
+
+  setLocation: (
+    value: string
+  ) => void;
+
   detectLocation: () => void;
+
   onBack: () => void;
+
   onSell: () => void;
 }) {
   const kabadiwalas = [
@@ -1631,14 +1836,15 @@ function NearestKabadi({
         </h2>
 
         <p className="mt-2 max-w-2xl text-slate-500">
-          Find local Kabadiwalas near your location
-          and choose where you want to sell your scrap.
+          Find local Kabadiwalas near your
+          location and choose where you want
+          to sell your scrap.
         </p>
 
       </div>
 
 
-      {/* LOCATION SEARCH */}
+      {/* LOCATION */}
 
       <div className="mt-7 rounded-3xl border border-slate-200 bg-white p-6">
 
@@ -1652,7 +1858,9 @@ function NearestKabadi({
             type="text"
             value={location}
             onChange={(e) =>
-              setLocation(e.target.value)
+              setLocation(
+                e.target.value
+              )
             }
             className="flex-1 rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
             placeholder="Enter your location"
@@ -1690,57 +1898,59 @@ function NearestKabadi({
 
         <div className="grid gap-4">
 
-          {kabadiwalas.map((kabadi) => (
+          {kabadiwalas.map(
+            (kabadi) => (
 
-            <div
-              key={kabadi.name}
-              className="rounded-3xl border border-slate-200 bg-white p-5 transition hover:border-green-300 hover:shadow-md"
-            >
+              <div
+                key={kabadi.name}
+                className="rounded-3xl border border-slate-200 bg-white p-5 transition hover:border-green-300 hover:shadow-md"
+              >
 
-              <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
 
-                <div className="flex items-start gap-4">
+                  <div className="flex items-start gap-4">
 
-                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-green-50 text-2xl">
-                    ♻️
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-green-50 text-2xl">
+                      ♻️
+                    </div>
+
+                    <div>
+
+                      <h4 className="font-bold">
+                        {kabadi.name}
+                      </h4>
+
+                      <p className="mt-1 text-sm text-slate-500">
+                        📍 {kabadi.distance}
+                      </p>
+
+                      <p className="mt-1 text-sm">
+                        ⭐ {kabadi.rating}
+                      </p>
+
+                      <p className="mt-1 text-xs text-slate-400">
+                        {kabadi.phone}
+                      </p>
+
+                    </div>
+
                   </div>
 
-                  <div>
 
-                    <h4 className="font-bold">
-                      {kabadi.name}
-                    </h4>
-
-                    <p className="mt-1 text-sm text-slate-500">
-                      📍 {kabadi.distance}
-                    </p>
-
-                    <p className="mt-1 text-sm">
-                      ⭐ {kabadi.rating}
-                    </p>
-
-                    <p className="mt-1 text-xs text-slate-400">
-                      {kabadi.phone}
-                    </p>
-
-                  </div>
+                  <button
+                    type="button"
+                    onClick={onSell}
+                    className="rounded-xl bg-green-600 px-5 py-3 text-sm font-bold text-white hover:bg-green-700"
+                  >
+                    Sell Scrap →
+                  </button>
 
                 </div>
 
-
-                <button
-                  type="button"
-                  onClick={onSell}
-                  className="rounded-xl bg-green-600 px-5 py-3 text-sm font-bold text-white hover:bg-green-700"
-                >
-                  Sell Scrap →
-                </button>
-
               </div>
 
-            </div>
-
-          ))}
+            )
+          )}
 
         </div>
 
@@ -1753,6 +1963,10 @@ function NearestKabadi({
 
 /* =============================================================
    MY PICKUPS
+
+   IMPORTANT:
+   This now reads the SAME localStorage data that is
+   sent to the Kabadiwala page.
 ============================================================= */
 
 function MyPickups({
@@ -1760,6 +1974,49 @@ function MyPickups({
 }: {
   onBack: () => void;
 }) {
+  const [requests, setRequests] = useState<
+    PickupRequest[]
+  >(() => {
+    if (
+      typeof window ===
+      "undefined"
+    ) {
+      return [];
+    }
+
+    try {
+      const stored =
+        localStorage.getItem(
+          PICKUP_REQUESTS_KEY
+        );
+
+      return stored
+        ? JSON.parse(stored)
+        : [];
+    } catch {
+      return [];
+    }
+  });
+
+  /* Refresh requests */
+
+  const refreshRequests = () => {
+    try {
+      const stored =
+        localStorage.getItem(
+          PICKUP_REQUESTS_KEY
+        );
+
+      setRequests(
+        stored
+          ? JSON.parse(stored)
+          : []
+      );
+    } catch {
+      setRequests([]);
+    }
+  };
+
   return (
     <div>
 
@@ -1776,91 +2033,216 @@ function MyPickups({
         </h2>
 
         <p className="mt-2 text-slate-500">
-          Track upcoming and previous waste collection
-          requests from one place.
+          Track your pickup requests and
+          see when a Kabadiwala accepts them.
         </p>
 
       </div>
 
 
-      <div className="mt-7 space-y-4">
+      {/* REFRESH */}
 
-        {demoPickups.map((pickup) => (
+      <div className="mt-6 flex justify-end">
 
-          <div
-            key={pickup.id}
-            className="rounded-3xl border border-slate-200 bg-white p-6"
-          >
+        <button
+          type="button"
+          onClick={refreshRequests}
+          className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold hover:bg-slate-50"
+        >
+          🔄 Refresh Status
+        </button>
 
-            <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
+      </div>
 
-              <div className="flex items-start gap-4">
 
-                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-green-50 text-xl">
-                  {pickup.type === "Sell Scrap"
-                    ? "💰"
-                    : "🚛"}
-                </div>
+      {/* REQUESTS */}
 
-                <div>
+      <div className="mt-4 space-y-4">
 
-                  <div className="flex flex-wrap items-center gap-3">
+        {requests.length === 0 ? (
 
-                    <h3 className="font-bold">
-                      {pickup.type}
-                    </h3>
+          <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-10 text-center">
 
-                    <StatusBadge
-                      status={pickup.status}
+            <div className="text-4xl">
+              📅
+            </div>
+
+            <h3 className="mt-4 text-xl font-bold">
+              No pickup requests yet
+            </h3>
+
+            <p className="mt-2 text-sm text-slate-500">
+              Your new pickup requests will
+              appear here.
+            </p>
+
+          </div>
+
+        ) : (
+
+          requests.map(
+            (pickup) => (
+
+              <div
+                key={pickup.id}
+                className="rounded-3xl border border-slate-200 bg-white p-6"
+              >
+
+                <div className="flex flex-col gap-5">
+
+                  {/* TOP */}
+
+                  <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+
+                    <div className="flex items-start gap-4">
+
+                      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-green-50 text-xl">
+                        {pickup.requestType ===
+                        "Sell Scrap"
+                          ? "💰"
+                          : "🚛"}
+                      </div>
+
+                      <div>
+
+                        <div className="flex flex-wrap items-center gap-3">
+
+                          <h3 className="font-bold">
+                            {pickup.requestType}
+                          </h3>
+
+                          <StatusBadge
+                            status={
+                              pickup.status
+                            }
+                          />
+
+                        </div>
+
+                        <p className="mt-2 text-sm text-slate-500">
+                          {pickup.id}
+                        </p>
+
+                      </div>
+
+                    </div>
+
+                    {pickup.assignedKabadiwala && (
+                      <div className="rounded-xl bg-green-50 px-4 py-3">
+
+                        <p className="text-[10px] font-bold uppercase text-green-600">
+                          KABADIWALA
+                        </p>
+
+                        <p className="mt-1 text-sm font-bold text-green-800">
+                          {
+                            pickup.assignedKabadiwala
+                          }
+                        </p>
+
+                      </div>
+                    )}
+
+                  </div>
+
+
+                  {/* DETAILS */}
+
+                  <div className="grid gap-4 rounded-2xl bg-slate-50 p-5 sm:grid-cols-2 lg:grid-cols-4">
+
+                    <SummaryItem
+                      label="Material"
+                      value={
+                        pickup.material
+                      }
+                    />
+
+                    <SummaryItem
+                      label="Quantity"
+                      value={
+                        pickup.quantity
+                      }
+                    />
+
+                    <SummaryItem
+                      label="Date"
+                      value={
+                        pickup.date
+                      }
+                    />
+
+                    <SummaryItem
+                      label="Time"
+                      value={
+                        pickup.time
+                      }
                     />
 
                   </div>
 
-                  <p className="mt-2 text-sm text-slate-500">
-                    {pickup.id}
-                  </p>
+
+                  {/* LOCATION */}
+
+                  <div className="rounded-2xl border border-slate-100 p-4">
+
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                      PICKUP LOCATION
+                    </p>
+
+                    <p className="mt-1 text-sm font-semibold">
+                      📍 {pickup.location}
+                    </p>
+
+                  </div>
+
+
+                  {/* STATUS MESSAGE */}
+
+                  <div
+                    className={`rounded-xl p-4 text-sm font-semibold ${
+                      pickup.status ===
+                      "Pending"
+                        ? "bg-orange-50 text-orange-800"
+                        : pickup.status ===
+                          "Accepted" ||
+                          pickup.status ===
+                          "Confirmed"
+                          ? "bg-green-50 text-green-800"
+                          : pickup.status ===
+                            "Rejected"
+                            ? "bg-red-50 text-red-800"
+                            : "bg-slate-50 text-slate-700"
+                    }`}
+                  >
+
+                    {pickup.status ===
+                      "Pending" &&
+                      "⏳ Waiting for a Kabadiwala to accept your request."}
+
+                    {(pickup.status ===
+                      "Accepted" ||
+                      pickup.status ===
+                        "Confirmed") &&
+                      `✓ ${pickup.assignedKabadiwala || "A Kabadiwala"} has accepted your pickup request.`}
+
+                    {pickup.status ===
+                      "Rejected" &&
+                      "✕ This pickup request was rejected. You can create another request."}
+
+                    {pickup.status ===
+                      "Completed" &&
+                      "✓ Pickup completed successfully."}
+
+                  </div>
 
                 </div>
 
               </div>
 
+            )
+          )
 
-              <div className="grid gap-3 text-sm sm:grid-cols-3">
-
-                <div>
-                  <p className="text-xs font-bold text-slate-400">
-                    DATE
-                  </p>
-                  <p className="mt-1 font-semibold">
-                    {pickup.date}
-                  </p>
-                </div>
-
-                <div>
-                  <p className="text-xs font-bold text-slate-400">
-                    TIME
-                  </p>
-                  <p className="mt-1 font-semibold">
-                    {pickup.time}
-                  </p>
-                </div>
-
-                <div>
-                  <p className="text-xs font-bold text-slate-400">
-                    LOCATION
-                  </p>
-                  <p className="mt-1 font-semibold">
-                    {pickup.location}
-                  </p>
-                </div>
-
-              </div>
-
-            </div>
-
-          </div>
-
-        ))}
+        )}
 
       </div>
 
@@ -1894,8 +2276,8 @@ function Transactions({
         </h2>
 
         <p className="mt-2 text-slate-500">
-          Keep track of money earned from selling your
-          recyclable materials.
+          Keep track of money earned from
+          selling your recyclable materials.
         </p>
 
       </div>
@@ -1933,19 +2315,15 @@ function Transactions({
 
       <div className="mt-7 rounded-3xl border border-slate-200 bg-white p-6">
 
-        <div className="flex items-center justify-between">
+        <div>
 
-          <div>
+          <p className="text-xs font-bold text-green-600">
+            RECENT ACTIVITY
+          </p>
 
-            <p className="text-xs font-bold text-green-600">
-              RECENT ACTIVITY
-            </p>
-
-            <h3 className="mt-1 text-xl font-bold">
-              Transaction History
-            </h3>
-
-          </div>
+          <h3 className="mt-1 text-xl font-bold">
+            Transaction History
+          </h3>
 
         </div>
 
@@ -2149,14 +2527,17 @@ function SummaryItem({
 function StatusBadge({
   status,
 }: {
-  status: "Confirmed" | "Pending" | "Completed";
+  status: PickupStatus;
 }) {
   const classes =
-    status === "Confirmed"
+    status === "Confirmed" ||
+    status === "Accepted"
       ? "bg-green-50 text-green-700"
       : status === "Pending"
         ? "bg-orange-50 text-orange-700"
-        : "bg-slate-100 text-slate-600";
+        : status === "Rejected"
+          ? "bg-red-50 text-red-700"
+          : "bg-slate-100 text-slate-600";
 
   return (
     <span
@@ -2196,7 +2577,8 @@ function BackButton({
 function getTodayDate() {
   const today = new Date();
 
-  const year = today.getFullYear();
+  const year =
+    today.getFullYear();
 
   const month = String(
     today.getMonth() + 1
@@ -2214,7 +2596,9 @@ function getTodayDate() {
    FORMAT DATE
 ============================================================= */
 
-function formatDate(dateString: string) {
+function formatDate(
+  dateString: string
+) {
   if (!dateString) {
     return "Not selected";
   }
@@ -2223,11 +2607,14 @@ function formatDate(dateString: string) {
     `${dateString}T00:00:00`
   );
 
-  return date.toLocaleDateString("en-IN", {
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  });
+  return date.toLocaleDateString(
+    "en-IN",
+    {
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    }
+  );
 }
 
 
@@ -2235,19 +2622,28 @@ function formatDate(dateString: string) {
    FORMAT TIME
 ============================================================= */
 
-function formatTime(timeString: string) {
+function formatTime(
+  timeString: string
+) {
   if (!timeString) {
     return "Not selected";
   }
 
-  const [hourString, minute] =
-    timeString.split(":");
+  const [
+    hourString,
+    minute,
+  ] = timeString.split(":");
 
-  let hour = Number(hourString);
+  let hour =
+    Number(hourString);
 
-  const period = hour >= 12 ? "PM" : "AM";
+  const period =
+    hour >= 12
+      ? "PM"
+      : "AM";
 
-  hour = hour % 12 || 12;
+  hour =
+    hour % 12 || 12;
 
   return `${hour}:${minute} ${period}`;
 }
